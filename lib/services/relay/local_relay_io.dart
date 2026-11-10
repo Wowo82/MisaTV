@@ -11,6 +11,7 @@ import '../drive/drive_descriptor.dart';
 import '../drive/uc_native.dart';
 import '../torrent/bt_stream.dart';
 import 'm3u8_purify.dart';
+import 'stream_cache_io.dart';
 
 /// 本地 9978 中继：`/play` / `/file` / `/pkg` / `/img` / `/bt` / `/proxy?do=live`。
 ///
@@ -45,6 +46,9 @@ class LocalRelay {
   /// 当前常驻取流 JVM 的宿主代理端口（`/proxy?do=hmys` 等壳路由要转发给它）。
   int Function() _jvmProxyPort = () => 0;
 
+  /// 边播边缓存的磁盘实现；未启用 / 未配置目录时为 null。
+  StreamDiskCache? _streamCache;
+
   /// `/play` 的请求头不写进 URL，而是换成短 token（`hk=h1`）。
   ///
   /// 网盘直链 + Cookie + UA + Referer 一起塞进 query 时，URL 很容易超过
@@ -78,6 +82,9 @@ class LocalRelay {
     String Function(String id)? davAuth,
     BtStreamSource? Function()? btSource,
     int Function()? jvmProxyPort,
+    String Function()? cacheDir,
+    bool Function()? cacheEnabled,
+    int Function()? cacheLimitMb,
   }) async {
     if (_server != null) return;
     _fileRoot = fileRoot;
@@ -87,6 +94,14 @@ class LocalRelay {
     _davAuth = davAuth ?? (_) => '';
     _btSource = btSource ?? () => null;
     _jvmProxyPort = jvmProxyPort ?? () => 0;
+    final cacheRoot = cacheDir?.call().trim() ?? '';
+    _streamCache = cacheRoot.isEmpty
+        ? null
+        : StreamDiskCache(
+            dir: cacheRoot,
+            enabled: cacheEnabled ?? () => false,
+            limitMb: cacheLimitMb ?? () => 1024,
+          );
     _client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 15)
       ..autoUncompress = false;
@@ -107,6 +122,14 @@ class LocalRelay {
     server.listen(_handle, onError: (Object _) {});
   }
 
+  /// 边播边缓存当前占用字节数（设置页展示 / 清空前确认用）。
+  Future<int> streamCacheBytes() async => await _streamCache?.totalBytes() ?? 0;
+
+  /// 清空边播缓存目录。
+  Future<void> clearStreamCache() async {
+    await _streamCache?.clear();
+  }
+
   Future<void> stop() async {
     final server = _server;
     _server = null;
@@ -115,6 +138,7 @@ class LocalRelay {
     _playHeaderTokens.clear();
     _playTargets.clear();
     _playTargetTokens.clear();
+    _streamCache = null;
     try {
       await server?.close(force: true);
     } catch (_) {
@@ -282,6 +306,21 @@ class LocalRelay {
       if (auth.isNotEmpty) headers['Authorization'] = auth;
     }
     final range = request.headers.value(HttpHeaders.rangeHeader);
+    // 边播边缓存：命中直接读盘，连上游都不碰 —— 拖回看过的位置不再回源。
+    final cacheKey = StreamDiskCache.keyOf(target);
+    if (range == null &&
+        request.method == 'GET' &&
+        !target.toLowerCase().contains('.m3u8')) {
+      final cached = await _streamCache?.lookup(cacheKey);
+      if (cached != null) {
+        res.statusCode = 200;
+        res.headers.set(HttpHeaders.contentTypeHeader, cached.contentType);
+        res.headers.contentLength = cached.length;
+        await res.addStream(cached.file.openRead());
+        await res.close();
+        return;
+      }
+    }
 
     final upstream = await _open(
       target,
@@ -347,7 +386,52 @@ class LocalRelay {
       await res.close();
       return;
     }
-    await upstream.pipe(res);
+    // 未命中缓存：一边转发给播放器，一边把分片写进本地。
+    // 只缓存「整段 GET 的媒体响应」；Range、gzip、错误页一律透传。
+    final cacheable =
+        _streamCache != null &&
+        range == null &&
+        request.method == 'GET' &&
+        upstream.statusCode == 200 &&
+        _responseHeader(upstream, HttpHeaders.contentEncodingHeader).isEmpty &&
+        _cacheableContentType(contentType);
+    final writer = cacheable
+        ? await _streamCache!.open(
+            cacheKey,
+            contentType: contentType,
+            length: upstream.contentLength,
+          )
+        : null;
+    if (writer == null) {
+      await upstream.pipe(res);
+      return;
+    }
+    try {
+      await for (final chunk in upstream) {
+        res.add(chunk);
+        writer.add(chunk);
+      }
+      await res.close();
+      await writer.commit();
+    } catch (_) {
+      // 播放器提前断开（拖动 / 切集）：半截文件不留在缓存里。
+      await writer.abort();
+      try {
+        await res.close();
+      } catch (_) {}
+    }
+  }
+
+  /// 只把音视频 / 图片 / 二进制当作可缓存内容，避免把 HTML 错误页写进缓存。
+  static bool _cacheableContentType(String type) {
+    final value = type.toLowerCase();
+    if (value.isEmpty) return true;
+    return value.startsWith('video/') ||
+        value.startsWith('audio/') ||
+        value.startsWith('image/') ||
+        value.contains('octet-stream') ||
+        value.contains('mp2t') ||
+        value.contains('mp4');
   }
 
   Future<void> _handleFile(HttpRequest request) async {

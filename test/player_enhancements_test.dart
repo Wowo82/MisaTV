@@ -43,7 +43,10 @@ void main() {
       expect(settings.tmdbApiKey, 'tmdb-key');
       expect(settings.bossKey, 'alt+q');
       expect(PlayerSettings.fromJson({}).bossKey, kDefaultBossKey);
-      expect(PlayerSettings.fromJson({'bossKey': 'bogus'}).bossKey, 'ctrl+shift+b');
+      expect(
+        PlayerSettings.fromJson({'bossKey': 'bogus'}).bossKey,
+        'ctrl+shift+b',
+      );
       expect(PlayerSettings.fromJson({'bossKey': 'OFF'}).bossKey, 'off');
       expect(bossKeyLabel('f12'), 'F12');
       expect(settings.toJson()['bossKey'], 'alt+q');
@@ -102,6 +105,41 @@ void main() {
   });
 
   group('跳过片头 / 片尾', () {
+    test('右键双击判定：时间窗口 + 位置容差', () {
+      // 窗口内、位置几乎不动 → 双击（清除记录）。
+      expect(
+        isSkipDoubleTap(
+          gap: const Duration(milliseconds: 120),
+          dx: 300,
+          lastDx: 302,
+        ),
+        isTrue,
+      );
+      // 间隔超过 300ms → 两次独立单击，否则连设片头 / 片尾会被误判成清除。
+      expect(
+        isSkipDoubleTap(
+          gap: const Duration(milliseconds: 420),
+          dx: 300,
+          lastDx: 300,
+        ),
+        isFalse,
+      );
+      // 位置偏差超出容差 → 独立单击。
+      expect(
+        isSkipDoubleTap(
+          gap: const Duration(milliseconds: 80),
+          dx: 300,
+          lastDx: 340,
+        ),
+        isFalse,
+      );
+      // 恰好卡在窗口与容差边界上仍算命中。
+      expect(
+        isSkipDoubleTap(gap: skipDoubleTapWindow, dx: 324, lastDx: 300),
+        isTrue,
+      );
+    });
+
     test('秒数归一：负数 / 非法 / 超上限', () {
       expect(clampSkipSeconds(-1), 0);
       expect(clampSkipSeconds('abc'), 0);

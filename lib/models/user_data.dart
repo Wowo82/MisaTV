@@ -364,6 +364,11 @@ class PlayerSettings {
     this.overlayVisible = false,
     this.volume = 1.0,
     this.m3u8Purify = false,
+    this.bufferMinSec = 1.0,
+    this.bufferMaxSec = 4.0,
+    this.streamCache = false,
+    this.streamCacheMb = 1024,
+    this.downloadDir = '',
     this.fit = 'contain',
     this.jsWorkerPool = false,
     this.keepSpiderHosts = false,
@@ -421,6 +426,11 @@ class PlayerSettings {
     bool? overlayVisible,
     double? volume,
     bool? m3u8Purify,
+    double? bufferMinSec,
+    double? bufferMaxSec,
+    bool? streamCache,
+    int? streamCacheMb,
+    String? downloadDir,
     String? fit,
     bool? jsWorkerPool,
     bool? keepSpiderHosts,
@@ -442,6 +452,11 @@ class PlayerSettings {
     overlayVisible: overlayVisible ?? this.overlayVisible,
     volume: volume ?? this.volume,
     m3u8Purify: m3u8Purify ?? this.m3u8Purify,
+    bufferMinSec: bufferMinSec ?? this.bufferMinSec,
+    bufferMaxSec: bufferMaxSec ?? this.bufferMaxSec,
+    streamCache: streamCache ?? this.streamCache,
+    streamCacheMb: streamCacheMb ?? this.streamCacheMb,
+    downloadDir: downloadDir ?? this.downloadDir,
     fit: fit ?? this.fit,
     jsWorkerPool: jsWorkerPool ?? this.jsWorkerPool,
     keepSpiderHosts: keepSpiderHosts ?? this.keepSpiderHosts,
@@ -457,6 +472,21 @@ class PlayerSettings {
 
   /// m3u8 去广告（默认关；只在点播清单上生效）。
   final bool m3u8Purify;
+
+  /// 起播预缓冲秒数（fvp/libmdk `bufferRange.min`）：攒够这么多才开播。
+  final double bufferMinSec;
+
+  /// 最大缓冲秒数（fvp/libmdk `bufferRange.max`）：超过就停止继续拉流。
+  final double bufferMaxSec;
+
+  /// 边播边缓存：把已下行的分片写进本地磁盘，重看 / 拖动直接读盘。
+  final bool streamCache;
+
+  /// 边播边缓存容量上限（MB），超出按最久未用淘汰。
+  final int streamCacheMb;
+
+  /// 视频下载目录；空串 = 应用数据目录下的 `downloads`。
+  final String downloadDir;
 
   /// JS 蜘蛛并行（实验，默认关）：开启后最多 3 只 QuickJS 执行器，
   /// 多 JS 源搜索/浏览不用再排同一个 isolate 的队。
@@ -491,6 +521,11 @@ class PlayerSettings {
     'overlayVisible': overlayVisible,
     'volume': volume,
     'm3u8Purify': m3u8Purify,
+    'bufferMinSec': bufferMinSec,
+    'bufferMaxSec': bufferMaxSec,
+    'streamCache': streamCache,
+    'streamCacheMb': streamCacheMb,
+    'downloadDir': downloadDir,
     'fit': fit,
     'jsWorkerPool': jsWorkerPool,
     'keepSpiderHosts': keepSpiderHosts,
@@ -526,6 +561,17 @@ class PlayerSettings {
         .clamp(0.0, 1.0)
         .toDouble(),
     m3u8Purify: (j['m3u8Purify'] as bool?) ?? false,
+    bufferMinSec: ((j['bufferMinSec'] as num?)?.toDouble() ?? 1.0)
+        .clamp(0.2, 30.0)
+        .toDouble(),
+    bufferMaxSec: ((j['bufferMaxSec'] as num?)?.toDouble() ?? 4.0)
+        .clamp(1.0, 120.0)
+        .toDouble(),
+    streamCache: (j['streamCache'] as bool?) ?? false,
+    streamCacheMb: ((j['streamCacheMb'] as num?)?.toInt() ?? 1024)
+        .clamp(128, 16384)
+        .toInt(),
+    downloadDir: (j['downloadDir'] ?? '').toString().trim(),
     fit: normalizePlayerFit((j['fit'] ?? '').toString()).name,
     jsWorkerPool: (j['jsWorkerPool'] as bool?) ?? false,
     keepSpiderHosts: (j['keepSpiderHosts'] as bool?) ?? false,

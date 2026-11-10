@@ -34,6 +34,7 @@ import '../../services/artwork/artwork_service.dart';
 import '../../services/player/auto_line_switch.dart';
 import '../../services/player/network_speed_smoother.dart';
 import '../../services/player/external_players.dart';
+import '../../services/download/download_service.dart';
 import '../../services/player/skip_segments.dart';
 import '../../services/relay/local_relay.dart';
 import '../../services/jar_spider/hyms_native.dart';
@@ -125,6 +126,16 @@ class _PlayerPageState extends State<PlayerPage>
   int _skipOutro = 0;
   String _skipInheritedFrom = '';
   bool _outroFired = false;
+
+  /// 进度条右键单击 / 双击判定：双击清除记录，单击取点。
+  /// 单击要等过双击窗口才执行，否则第二次按下时第一次的设置已经落盘，撤不回来。
+  Timer? _skipTapTimer;
+  DateTime? _lastSecondaryTapAt;
+  double _lastSecondaryTapDx = 0;
+
+  /// 已经写进当前内核的缓冲参数：设置页改动后据此判断要不要重新下发。
+  double? _lastAppliedBufferMin;
+  double? _lastAppliedBufferMax;
   bool _holdingRate = false;
   double? _rateBeforeHold;
   bool _mini = false;
@@ -292,9 +303,22 @@ class _PlayerPageState extends State<PlayerPage>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (_opened) return;
+    if (_opened) {
+      // 设置页改了缓冲参数：当前播放器立刻跟随，不必等下一集起播。
+      final settings = _app.playerSettings;
+      if (settings.bufferMinSec != _lastAppliedBufferMin ||
+          settings.bufferMaxSec != _lastAppliedBufferMax) {
+        _lastAppliedBufferMin = settings.bufferMinSec;
+        _lastAppliedBufferMax = settings.bufferMaxSec;
+        final controller = _controller;
+        if (controller != null) _applyBufferRange(controller);
+      }
+      return;
+    }
     _opened = true;
     _app = AppScope.of(context);
+    _lastAppliedBufferMin = _app.playerSettings.bufferMinSec;
+    _lastAppliedBufferMax = _app.playerSettings.bufferMaxSec;
     _immersiveMode = _app.playerSettings.immersiveMode;
     BossKeyService.instance.bindPlayer(
       this,
@@ -581,6 +605,8 @@ class _PlayerPageState extends State<PlayerPage>
       // 4K / HDR 线路经过本机中继时，个别清单会让 fvp 一直没首帧；
       // 25 秒没有初始化完成就放弃，后面会尝试绕过中继直连。
       await controller.initialize().timeout(const Duration(seconds: 25));
+      // 缓冲参数要在起播前设好：fvp 的 bufferRange 只影响后续拉流。
+      _applyBufferRange(controller);
       final live = _detectLive(controller);
       _live = live;
       await controller.setPlaybackSpeed(_rate);
@@ -1331,6 +1357,7 @@ class _PlayerPageState extends State<PlayerPage>
     _hideTimer?.cancel();
     _saveTimer?.cancel();
     _detailsTimer?.cancel();
+    _cancelPendingSkipPick();
     final autoSearchDone = _autoSearchDone;
     if (autoSearchDone != null && !autoSearchDone.isCompleted) {
       autoSearchDone.complete();
@@ -1716,6 +1743,39 @@ class _PlayerPageState extends State<PlayerPage>
     }
     final ahead = end - value.position;
     return ahead.inMilliseconds <= 0 ? null : ahead.inMilliseconds / 1000;
+  }
+
+  /// 已缓冲到的位置（毫秒）：取所有 buffered range 里最靠后的 end。
+  double _bufferedEndMs() {
+    final value = _controller?.value;
+    if (value == null || value.buffered.isEmpty) return 0;
+    var end = Duration.zero;
+    for (final range in value.buffered) {
+      if (range.end > end) end = range.end;
+    }
+    return end.inMilliseconds.toDouble();
+  }
+
+  /// 把设置里的「起播预缓冲 / 最大缓冲」写进 fvp（libmdk）内核。
+  ///
+  /// video_player 没有等价参数，非 fvp 内核时直接跳过。换集时调用一次；
+  /// 设置变更由 didChangeDependencies 触发重新下发，当前集立即生效。
+  void _applyBufferRange(VideoPlayerController controller) {
+    if (!_mdkEnabled) return;
+    final settings = _app.playerSettings;
+    final minMs = (settings.bufferMinSec * 1000)
+        .round()
+        .clamp(200, 30000)
+        .toInt();
+    final maxMs = (settings.bufferMaxSec * 1000)
+        .round()
+        .clamp(minMs + 500, 120000)
+        .toInt();
+    try {
+      controller.setBufferRange(min: minMs, max: maxMs);
+    } catch (_) {
+      // 内核未接管时扩展会抛 StateError，退化为内核默认缓冲
+    }
   }
 
   /// 读 fvp 的 MediaInfo：分辨率、帧率、编码、容器与实时码率（当作网速）。
@@ -2281,7 +2341,8 @@ class _PlayerPageState extends State<PlayerPage>
                     style: const TextStyle(color: Colors.white70, fontSize: 12),
                   ),
                   Expanded(
-                    // 进度条右键一次点选即生效：开头 5 分钟内取片头、结尾 5 分钟内取片尾。
+                    // 进度条右键一次点选即生效：开头 5 分钟内取片头、结尾 5 分钟内取片尾；
+                    // 右键双击则清除本资源的记录。
                     child: LayoutBuilder(
                       builder: (_, constraints) => Listener(
                         onPointerDown: (event) {
@@ -2289,36 +2350,63 @@ class _PlayerPageState extends State<PlayerPage>
                           if ((event.buttons & kSecondaryMouseButton) == 0) {
                             return;
                           }
-                          unawaited(
-                            _pickSkipFromProgress(
-                              width: constraints.maxWidth,
-                              localDx: event.localPosition.dx,
-                            ),
+                          _onProgressSecondaryDown(
+                            width: constraints.maxWidth,
+                            dx: event.localPosition.dx,
                           );
                         },
-                        child: SliderTheme(
-                          data: SliderTheme.of(context).copyWith(
-                            trackHeight: 3,
-                            thumbShape: const RoundSliderThumbShape(
-                              enabledThumbRadius: 6,
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            // 已缓冲区间：画在轨道下方，位置与 Slider 可见轨道对齐
+                            // （两端各内缩 overlay 半径 12）。
+                            Positioned.fill(
+                              child: IgnorePointer(
+                                child: CustomPaint(
+                                  painter: _BufferedBarPainter(
+                                    played: total <= 0
+                                        ? 0
+                                        : (value / total).clamp(0.0, 1.0),
+                                    buffered: total <= 0
+                                        ? 0
+                                        : (_bufferedEndMs() / total).clamp(
+                                            0.0,
+                                            1.0,
+                                          ),
+                                    inset: 12,
+                                  ),
+                                ),
+                              ),
                             ),
-                            overlayShape: const RoundSliderOverlayShape(
-                              overlayRadius: 12,
+                            SliderTheme(
+                              data: SliderTheme.of(context).copyWith(
+                                trackHeight: 3,
+                                thumbShape: const RoundSliderThumbShape(
+                                  enabledThumbRadius: 6,
+                                ),
+                                overlayShape: const RoundSliderOverlayShape(
+                                  overlayRadius: 12,
+                                ),
+                                activeTrackColor: Colors.white,
+                                inactiveTrackColor: Colors.white24,
+                                thumbColor: Colors.white,
+                              ),
+                              child: Slider(
+                                value: value,
+                                max: total.toDouble(),
+                                // 开始拖进度就放弃还没执行的右键取点，
+                                // 免得 300ms 后凭空多出一条片头 / 片尾记录。
+                                onChangeStart: (_) => _cancelPendingSkipPick(),
+                                onChanged: (v) => setState(
+                                  () => _position = Duration(
+                                    milliseconds: v.round(),
+                                  ),
+                                ),
+                                onChangeEnd: (v) =>
+                                    _seekTo(Duration(milliseconds: v.round())),
+                              ),
                             ),
-                            activeTrackColor: Colors.white,
-                            inactiveTrackColor: Colors.white24,
-                            thumbColor: Colors.white,
-                          ),
-                          child: Slider(
-                            value: value,
-                            max: total.toDouble(),
-                            onChanged: (v) => setState(
-                              () =>
-                                  _position = Duration(milliseconds: v.round()),
-                            ),
-                            onChangeEnd: (v) =>
-                                _seekTo(Duration(milliseconds: v.round())),
-                          ),
+                          ],
                         ),
                       ),
                     ),
@@ -2422,6 +2510,12 @@ class _PlayerPageState extends State<PlayerPage>
                             active: _skipIntro > 0 || _skipOutro > 0,
                             onTap: _showSkipSettings,
                           ),
+                        ),
+                      if (!_live)
+                        _barAction(
+                          icon: Icons.download_rounded,
+                          label: '下载',
+                          onTap: _downloadCurrent,
                         ),
                       _barAction(
                         icon: Icons.analytics_outlined,
@@ -3339,6 +3433,56 @@ class _PlayerPageState extends State<PlayerPage>
     }
   }
 
+  /// 进度条右键入口：单击取点，双击清除。
+  ///
+  /// 双击只能靠延迟确认：第一次右键按下先挂起一次取点，过了双击窗口还没等到
+  /// 第二次按下才真正执行；窗口内再次按下（位置偏差在 slop 内）就取消挂起、
+  /// 改为清除本资源的记录。这样不会出现「双击的第一下已经写进记录」的脏状态。
+  void _onProgressSecondaryDown({required double width, required double dx}) {
+    final now = DateTime.now();
+    final last = _lastSecondaryTapAt;
+    final isDoubleTap =
+        last != null &&
+        isSkipDoubleTap(
+          gap: now.difference(last),
+          dx: dx,
+          lastDx: _lastSecondaryTapDx,
+        );
+    _skipTapTimer?.cancel();
+    _skipTapTimer = null;
+    if (isDoubleTap) {
+      _lastSecondaryTapAt = null;
+      unawaited(_clearSkipSegments());
+      return;
+    }
+    _lastSecondaryTapAt = now;
+    _lastSecondaryTapDx = dx;
+    _skipTapTimer = Timer(skipDoubleTapWindow, () {
+      _skipTapTimer = null;
+      _lastSecondaryTapAt = null;
+      unawaited(_pickSkipFromProgress(width: width, localDx: dx));
+    });
+  }
+
+  /// 取消还没执行的右键取点（开始拖进度条或离开页面时）。
+  void _cancelPendingSkipPick() {
+    _skipTapTimer?.cancel();
+    _skipTapTimer = null;
+    _lastSecondaryTapAt = null;
+  }
+
+  /// 右键双击进度条：清掉本资源的片头 / 片尾记录，与弹窗里的「清除本资源」一致。
+  Future<void> _clearSkipSegments() async {
+    if (_live) return;
+    if (_skipIntro <= 0 && _skipOutro <= 0) {
+      _toast('当前没有片头 / 片尾记录');
+      return;
+    }
+    await _saveSkipSegments(0, 0);
+    if (!mounted) return;
+    _toast('已清除本资源的片头 / 片尾记录');
+  }
+
   /// 进度条右键：直接按点击位置选取片头 / 片尾，不再弹二次菜单。
   ///
   /// 用区间来区分两种设置，避免互相踩：开头 5 分钟内 = 片头，结尾 5 分钟内 =
@@ -3502,7 +3646,8 @@ class _PlayerPageState extends State<PlayerPage>
                       Text(
                         '保存后对本资源所有剧集生效；片头 = 起播直接跳到该秒数，'
                         '片尾 = 距结尾还剩这么多秒时自动跳下一集。\n'
-                        '进度条上右键可直接取点：开头 5 分钟算片头，结尾 5 分钟算片尾。',
+                        '进度条上右键可直接取点：开头 5 分钟算片头，结尾 5 分钟算片尾；'
+                        '右键双击进度条可清除记录。',
                         style: Theme.of(ctx).textTheme.bodySmall
                             ?.copyWith(height: 1.5),
                       ),
@@ -3554,6 +3699,65 @@ class _PlayerPageState extends State<PlayerPage>
     ];
     final base = parts.join(' / ');
     return _skipInheritedFrom.isEmpty ? base : '$base（本资源共用）';
+  }
+
+  /// 把当前集加入下载队列。
+  ///
+  /// 走 `preparePlay`：需要 Cookie / Referer 的网盘直链会换成中继地址，
+  /// 由本机中继注入请求头，下载和播放走同一条可用链路。是否 HLS 必须按
+  /// **原始**地址判断 —— 中继地址上看不出 `.m3u8`。
+  Future<void> _downloadCurrent() async {
+    final current = _currentPlay;
+    if (current == null || current.url.trim().isEmpty) {
+      _toast('还没有可下载的播放地址');
+      return;
+    }
+    final app = _app;
+    final prepared = app.preparePlay(current);
+    final url = prepared.url.trim();
+    if (url.isEmpty) {
+      _toast('当前地址无法下载');
+      return;
+    }
+    if (app.downloadService.tasks.any((t) => t.busy && t.url == url)) {
+      _toast('这一集已经在下载队列里');
+      return;
+    }
+    final episode = _episodeName.isEmpty ? '第${_index + 1}集' : _episodeName;
+    final title = _detail.name.trim().isEmpty ? '未命名影片' : _detail.name.trim();
+    final dir = app.downloadService.downloadDir;
+    final hls = looksLikeHls(current.url) || looksLikeHls(url);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('下载当前集'),
+        content: Text(
+          '$title · $episode\n\n'
+          '保存到：${dir.isEmpty ? '（下载目录未就绪）' : dir}\n'
+          '${hls ? '当前是 m3u8 流：按分片顺序合并成一个 .ts（加密流不支持）。' : '直链文件：支持断点续传。'}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: dir.isEmpty ? null : () => Navigator.of(ctx).pop(true),
+            child: const Text('开始下载'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final task = await app.downloadService.enqueue(
+      title: title,
+      episode: episode,
+      url: url,
+      headers: prepared.headers,
+      isHls: hls,
+    );
+    if (!mounted) return;
+    _toast(task == null ? '无法下载：下载目录未就绪' : '已加入下载队列，可在 设置 → 播放 → 下载管理 查看进度');
   }
 
   Future<void> _castToDevice() async {
@@ -3822,4 +4026,45 @@ class _MediaStats {
   final String audioCodec;
   final int audioChannels;
   final String format;
+}
+
+/// 进度条上的「已缓冲」条：从播放位置画到缓冲区末尾。
+///
+/// 与 Slider 的可见轨道对齐：轨道两端各内缩 overlay 半径（这里 12），
+/// 否则缓冲条会比轨道宽出一截，看起来像错位。
+class _BufferedBarPainter extends CustomPainter {
+  const _BufferedBarPainter({
+    required this.played,
+    required this.buffered,
+    required this.inset,
+  });
+
+  /// 已播放比例（0–1）。
+  final double played;
+
+  /// 已缓冲比例（0–1）。
+  final double buffered;
+
+  /// 轨道两端的缩进（= SliderTheme.overlayShape 的半径）。
+  final double inset;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final track = size.width - inset * 2;
+    if (track <= 0 || buffered <= played) return;
+    final left = inset + track * played;
+    final right = inset + track * buffered;
+    final centerY = size.height / 2;
+    final rect = Rect.fromLTRB(left, centerY - 1.5, right, centerY + 1.5);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, const Radius.circular(2)),
+      Paint()..color = Colors.white.withValues(alpha: 0.45),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _BufferedBarPainter oldDelegate) =>
+      oldDelegate.played != played ||
+      oldDelegate.buffered != buffered ||
+      oldDelegate.inset != inset;
 }

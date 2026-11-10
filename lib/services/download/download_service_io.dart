@@ -1,0 +1,463 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
+
+import '../../core/logging/app_log.dart';
+import 'download_task.dart';
+
+/// 视频下载：串行队列 + 单文件断点续传 + HLS 逐片合并。
+///
+/// 只做「把地址落到本地文件」：直链 MP4 直接写盘；m3u8 按清单顺序拉分片
+/// 拼成 `.ts`。带 AES-128 的加密流不处理 —— 宁可明确报错，也不产出坏文件。
+class DownloadService extends ChangeNotifier {
+  DownloadService();
+
+  final List<DownloadTask> _tasks = [];
+  final Map<String, _Control> _controls = {};
+  final Map<String, (int bytes, DateTime at)> _speedMarks = {};
+  HttpClient? _client;
+  String _defaultDir = '';
+  String Function() _customDir = () => '';
+  bool _pumping = false;
+  DateTime _lastNotify = DateTime.fromMillisecondsSinceEpoch(0);
+
+  List<DownloadTask> get tasks => List.unmodifiable(_tasks);
+
+  /// 注入目录：`defaultDir` 是应用数据目录下的 downloads，
+  /// `customDir` 由设置页的「下载目录」实时提供，非空时优先。
+  void configure({required String defaultDir, String Function()? customDir}) {
+    _defaultDir = defaultDir;
+    _customDir = customDir ?? () => '';
+  }
+
+  String get downloadDir {
+    final custom = _customDir().trim();
+    return custom.isEmpty ? _defaultDir : custom;
+  }
+
+  DownloadTask? taskOf(String id) {
+    for (final task in _tasks) {
+      if (task.id == id) return task;
+    }
+    return null;
+  }
+
+  /// 加入队列；返回 null 表示没有可用目录 / 地址为空。
+  ///
+  /// [isHls] 由调用方按**原始**地址判定：需要 Cookie 的源会被换成
+  /// `127.0.0.1/play?...` 中继地址，从那里看不出是不是 m3u8。
+  Future<DownloadTask?> enqueue({
+    required String title,
+    required String episode,
+    required String url,
+    Map<String, String> headers = const {},
+    String contentType = '',
+    bool? isHls,
+  }) async {
+    final target = url.trim();
+    if (target.isEmpty) return null;
+    final dir = downloadDir;
+    if (dir.isEmpty) return null;
+    final hls = isHls ?? looksLikeHls(target, contentType: contentType);
+    final ext = hls
+        ? '.ts'
+        : guessMediaExtension(target, contentType: contentType);
+    final base = sanitizeFileName(
+      episode.trim().isEmpty ? title : '$title ${episode.trim()}',
+    );
+    final task = DownloadTask(
+      id: '${DateTime.now().microsecondsSinceEpoch}',
+      title: title.trim().isEmpty ? '未命名' : title.trim(),
+      episode: episode.trim(),
+      url: target,
+      headers: Map<String, String>.from(headers),
+      savePath: _uniquePath(dir, base, ext),
+      isHls: hls,
+    );
+    _tasks.insert(0, task);
+    _notify(force: true);
+    unawaited(_pump());
+    return task;
+  }
+
+  String _uniquePath(String dir, String base, String ext) {
+    var candidate = p.join(dir, '$base$ext');
+    var index = 1;
+    while (File(candidate).existsSync() ||
+        _tasks.any((t) => t.savePath == candidate)) {
+      candidate = p.join(dir, '$base ($index)$ext');
+      index++;
+    }
+    return candidate;
+  }
+
+  void pause(String id) {
+    final task = taskOf(id);
+    if (task == null || !task.busy) return;
+    _controls.putIfAbsent(id, _Control.new).paused = true;
+    if (task.status == DownloadStatus.queued) {
+      task.status = DownloadStatus.paused;
+      _notify(force: true);
+    }
+  }
+
+  void resume(String id) {
+    final task = taskOf(id);
+    if (task == null) return;
+    if (task.status != DownloadStatus.paused &&
+        task.status != DownloadStatus.failed) {
+      return;
+    }
+    task.status = DownloadStatus.queued;
+    task.error = '';
+    _notify(force: true);
+    unawaited(_pump());
+  }
+
+  Future<void> cancel(String id) async {
+    final task = taskOf(id);
+    if (task == null) return;
+    final control = _controls.putIfAbsent(id, _Control.new);
+    control.canceled = true;
+    if (task.status == DownloadStatus.queued ||
+        task.status == DownloadStatus.paused) {
+      task.status = DownloadStatus.failed;
+      task.error = '已取消';
+      await _deletePart(task);
+      _notify(force: true);
+    }
+  }
+
+  /// 从列表移除（下载中的任务要先暂停 / 取消）。
+  void remove(String id) {
+    final task = taskOf(id);
+    if (task == null || task.busy) return;
+    _tasks.remove(task);
+    _controls.remove(id);
+    _speedMarks.remove(id);
+    _notify(force: true);
+  }
+
+  Future<void> _deletePart(DownloadTask task) async {
+    try {
+      final part = File('${task.savePath}.part');
+      if (await part.exists()) await part.delete();
+    } catch (_) {}
+  }
+
+  Future<void> _pump() async {
+    if (_pumping) return;
+    _pumping = true;
+    try {
+      while (true) {
+        DownloadTask? next;
+        for (final task in _tasks) {
+          if (task.status == DownloadStatus.queued) {
+            next = task;
+            break;
+          }
+        }
+        if (next == null) break;
+        await _run(next);
+      }
+    } finally {
+      _pumping = false;
+    }
+  }
+
+  Future<void> _run(DownloadTask task) async {
+    final control = _controls.putIfAbsent(task.id, _Control.new)
+      ..paused = false
+      ..canceled = false;
+    task.status = DownloadStatus.running;
+    task.error = '';
+    task.detail = '';
+    task.speedBps = 0;
+    _speedMarks.remove(task.id);
+    _notify(force: true);
+    try {
+      await Directory(p.dirname(task.savePath)).create(recursive: true);
+      if (task.isHls) {
+        await _runHls(task, control);
+      } else {
+        await _runFile(task, control);
+      }
+      if (control.canceled) {
+        await _deletePart(task);
+        task.status = DownloadStatus.failed;
+        task.error = '已取消';
+      } else if (control.paused) {
+        task.status = DownloadStatus.paused;
+      } else {
+        final part = File('${task.savePath}.part');
+        if (await part.exists()) await part.rename(task.savePath);
+        task.status = DownloadStatus.done;
+        task.detail = '';
+        task.speedBps = 0;
+        if (task.totalBytes > 0) task.receivedBytes = task.totalBytes;
+        AppLog.i('download', '下载完成 ${p.basename(task.savePath)}');
+      }
+    } catch (error) {
+      if (control.canceled) {
+        await _deletePart(task);
+        task.status = DownloadStatus.failed;
+        task.error = '已取消';
+      } else if (control.paused) {
+        task.status = DownloadStatus.paused;
+      } else {
+        task.status = DownloadStatus.failed;
+        task.error = '$error';
+        AppLog.w('download', '下载失败 ${_hostOf(task.url)} | $error');
+      }
+    } finally {
+      _speedMarks.remove(task.id);
+      if (!task.busy) _controls.remove(task.id);
+      _notify(force: true);
+    }
+  }
+
+  /// 单文件：`<目标>.part` 写盘，下次从这里续传。
+  Future<void> _runFile(DownloadTask task, _Control control) async {
+    final part = File('${task.savePath}.part');
+    var offset = 0;
+    if (await part.exists()) {
+      offset = await part.length();
+    }
+    if (offset > 0 && task.totalBytes > 0 && offset >= task.totalBytes) {
+      return; // 上一轮其实已经写完，只差 rename。
+    }
+    final response = await _get(
+      task.url,
+      task.headers,
+      range: offset > 0 ? 'bytes=$offset-' : null,
+    );
+    var append = offset > 0;
+    if (offset > 0 && response.statusCode == 200) {
+      // 服务端不认 Range：只能从头写，别把两份拼在一起。
+      append = false;
+      offset = 0;
+    } else if (offset > 0 && response.statusCode != 206) {
+      await response.drain<void>();
+      throw '续传失败（HTTP ${response.statusCode}）';
+    }
+    if (response.statusCode >= 400) {
+      await response.drain<void>();
+      throw '下载失败（HTTP ${response.statusCode}）';
+    }
+    final length = response.contentLength;
+    if (length > 0) task.totalBytes = length + offset;
+    task.receivedBytes = offset;
+    final sink = part.openWrite(
+      mode: append ? FileMode.append : FileMode.write,
+    );
+    var written = offset;
+    final done = Completer<void>();
+    late StreamSubscription<List<int>> sub;
+    sub = response.listen(
+      (chunk) {
+        if (control.canceled || control.paused) {
+          unawaited(sub.cancel());
+          if (!done.isCompleted) done.complete();
+          return;
+        }
+        try {
+          sink.add(chunk);
+        } catch (_) {
+          unawaited(sub.cancel());
+          if (!done.isCompleted) done.completeError('写入本地文件失败');
+          return;
+        }
+        written += chunk.length;
+        task.receivedBytes = written;
+        _notify();
+      },
+      onDone: () {
+        if (!done.isCompleted) done.complete();
+      },
+      onError: (Object error, StackTrace stack) {
+        if (!done.isCompleted) done.completeError(error, stack);
+      },
+      cancelOnError: true,
+    );
+    try {
+      await done.future;
+    } finally {
+      try {
+        await sink.close();
+      } catch (_) {}
+    }
+    if (control.canceled) throw const _CanceledException();
+  }
+
+  /// HLS：解析清单 → 逐片下载 → 顺序写进同一个 `.ts`。
+  ///
+  /// 不做分片级续传：恢复时删掉半截文件从头拼，避免片序错乱。
+  Future<void> _runHls(DownloadTask task, _Control control) async {
+    var playlistUrl = task.url;
+    HlsPlaylist? playlist;
+    for (var depth = 0; depth < 4; depth++) {
+      final text = await _fetchText(playlistUrl, task.headers);
+      final parsed = parseHlsPlaylist(text, baseUrl: playlistUrl);
+      if (parsed.variantUrl.isEmpty) {
+        playlist = parsed;
+        break;
+      }
+      playlistUrl = parsed.variantUrl;
+    }
+    if (playlist == null || playlist.segments.isEmpty) {
+      throw '清单里没有可下载的分片';
+    }
+    if (playlist.encrypted) {
+      throw '该 HLS 带 AES-128 加密，暂不支持下载';
+    }
+    final urls = <String>[
+      if (playlist.initSegment.isNotEmpty) playlist.initSegment,
+      ...playlist.segments,
+    ];
+    task.totalBytes = 0;
+    task.receivedBytes = 0;
+    task.detail = '0/${urls.length} 片';
+    final part = File('${task.savePath}.part');
+    await _deletePart(task);
+    final sink = part.openWrite();
+    var index = 0;
+    try {
+      for (final url in urls) {
+        if (control.canceled) throw const _CanceledException();
+        if (control.paused) return;
+        final response = await _get(url, task.headers);
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          await response.drain<void>();
+          throw '分片 ${index + 1} 下载失败（HTTP ${response.statusCode}）';
+        }
+        final done = Completer<void>();
+        late StreamSubscription<List<int>> sub;
+        sub = response.listen(
+          (chunk) {
+            if (control.canceled || control.paused) {
+              unawaited(sub.cancel());
+              if (!done.isCompleted) done.complete();
+              return;
+            }
+            sink.add(chunk);
+            task.receivedBytes += chunk.length;
+            _notify();
+          },
+          onDone: () {
+            if (!done.isCompleted) done.complete();
+          },
+          onError: (Object error, StackTrace stack) {
+            if (!done.isCompleted) done.completeError(error, stack);
+          },
+          cancelOnError: true,
+        );
+        await done.future;
+        index++;
+        task.detail = '$index/${urls.length} 片';
+        _notify(force: true);
+      }
+    } finally {
+      try {
+        await sink.close();
+      } catch (_) {}
+    }
+    if (control.canceled) throw const _CanceledException();
+  }
+
+  Future<String> _fetchText(String url, Map<String, String> headers) async {
+    final response = await _get(url, headers);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      await response.drain<void>();
+      throw '清单请求失败（HTTP ${response.statusCode}）';
+    }
+    final bytes = <int>[];
+    await for (final chunk in response) {
+      bytes.addAll(chunk);
+      if (bytes.length > 8 * 1024 * 1024) break; // 清单不该这么大
+    }
+    try {
+      return utf8.decode(bytes);
+    } catch (_) {
+      return latin1.decode(bytes, allowInvalid: true);
+    }
+  }
+
+  Future<HttpClientResponse> _get(
+    String url,
+    Map<String, String> headers, {
+    String? range,
+  }) async {
+    final client = _client ??= HttpClient()
+      ..connectionTimeout = const Duration(seconds: 20)
+      ..autoUncompress = false;
+    final request = await client.openUrl('GET', Uri.parse(url));
+    request.followRedirects = true;
+    request.maxRedirects = 8;
+    request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
+    headers.forEach((key, value) {
+      if (value.trim().isEmpty) return;
+      try {
+        request.headers.set(key, value);
+      } catch (_) {}
+    });
+    if (range != null) request.headers.set(HttpHeaders.rangeHeader, range);
+    return request.close();
+  }
+
+  /// 进度通知按 200ms 节流：分片回调可能一秒几百次，逐次 notify 会拖垮 UI。
+  void _notify({bool force = false}) {
+    if (!force) {
+      final now = DateTime.now();
+      if (now.difference(_lastNotify).inMilliseconds < 200) return;
+      _lastNotify = now;
+    }
+    _updateSpeeds();
+    notifyListeners();
+  }
+
+  void _updateSpeeds() {
+    final now = DateTime.now();
+    for (final task in _tasks) {
+      if (task.status != DownloadStatus.running) {
+        task.speedBps = 0;
+        continue;
+      }
+      final mark = _speedMarks[task.id];
+      if (mark == null) {
+        _speedMarks[task.id] = (task.receivedBytes, now);
+        continue;
+      }
+      final ms = now.difference(mark.$2).inMilliseconds;
+      if (ms < 500) continue;
+      task.speedBps = (task.receivedBytes - mark.$1) * 1000 / ms;
+      _speedMarks[task.id] = (task.receivedBytes, now);
+    }
+  }
+
+  static String _hostOf(String url) => Uri.tryParse(url)?.host ?? '';
+
+  @override
+  void dispose() {
+    for (final control in _controls.values) {
+      control.canceled = true;
+    }
+    _client?.close(force: true);
+    _client = null;
+    super.dispose();
+  }
+}
+
+class _Control {
+  bool paused = false;
+  bool canceled = false;
+}
+
+class _CanceledException implements Exception {
+  const _CanceledException();
+
+  @override
+  String toString() => '已取消';
+}

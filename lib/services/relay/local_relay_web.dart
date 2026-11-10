@@ -15,9 +15,16 @@ class LocalRelay {
     String Function(String id)? davAuth,
     dynamic btSource,
     int Function()? jvmProxyPort,
+    String Function()? cacheDir,
+    bool Function()? cacheEnabled,
+    int Function()? cacheLimitMb,
   }) async {}
 
   Future<void> stop() async {}
+
+  Future<int> streamCacheBytes() async => 0;
+
+  Future<void> clearStreamCache() async {}
 
   String playUrl(
     String url, {

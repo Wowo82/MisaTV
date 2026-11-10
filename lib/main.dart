@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import 'app.dart';
@@ -129,6 +130,15 @@ Future<void> _bootstrap() async {
       davAuth: (id) => state.davService.authHeader(id),
       btSource: () => state.torrentPlay,
       jvmProxyPort: () => sourceService.jar.activeHostProxyPort,
+      // 边播边缓存：目录固定放在应用数据下，开关与容量上限跟着设置实时走。
+      cacheDir: () => p.join(support, 'cache', 'stream'),
+      cacheEnabled: () => state.playerSettings.streamCache,
+      cacheLimitMb: () => state.playerSettings.streamCacheMb,
+    );
+    // 视频下载：默认落到应用数据目录，设置里指定目录后以设置为准。
+    state.downloadService.configure(
+      defaultDir: p.join(support, 'downloads'),
+      customDir: () => state.playerSettings.downloadDir,
     );
     appShutdown = () async {
       await sourceService.shutdown();

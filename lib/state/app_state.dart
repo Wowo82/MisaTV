@@ -23,6 +23,7 @@ import '../services/content_filter.dart';
 import '../services/danmaku/danmaku_service.dart';
 import '../services/danmaku/danmaku_settings.dart';
 import '../services/discover/discover_service.dart';
+import '../services/download/download_service.dart';
 import '../services/drive/drive_line_hint.dart';
 import '../services/drive/baidu_session.dart';
 import '../services/drive/quark_session.dart';
@@ -102,6 +103,9 @@ class AppState extends ChangeNotifier {
   );
   late final EpgService epgService = EpgService();
   late final DavService davService = DavService(store);
+
+  /// 视频下载：桌面端在 main 里注入目录，Web 版是空实现。
+  late final DownloadService downloadService = DownloadService();
 
   /// 磁力（BT）播放编排：桌面端在 main 里注入；Web 版为 null。
   TorrentPlay? torrentPlay;
@@ -2869,5 +2873,11 @@ class AppState extends ChangeNotifier {
   Future<void> removeDavServer(String id) async {
     await davService.remove(id);
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    downloadService.dispose();
+    super.dispose();
   }
 }

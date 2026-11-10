@@ -30,6 +30,7 @@ import '../../services/jvm/jvm_runtime.dart';
 import '../../services/mpv_extension.dart';
 import '../../services/player/external_players.dart';
 import '../../services/py_runtime_service.dart';
+import '../../services/relay/local_relay.dart';
 import '../../services/runtime_extension.dart';
 import '../../state/app_state.dart';
 import '../widgets/drive_cookie_dialog.dart';
@@ -41,6 +42,7 @@ import '../widgets/name_input_dialog.dart';
 import '../widgets/uc_tv_login_dialog.dart';
 import '../widgets/xunlei_login_dialog.dart';
 import 'dav_browse_page.dart';
+import 'downloads_page.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -841,6 +843,63 @@ class SettingsPageState extends State<SettingsPage> {
                             '本源线路都失败后再搜索其他源的相同片名',
                           ),
                           contentPadding: EdgeInsets.zero,
+                        ),
+                        _ActionRow(
+                          icon: Icons.memory_rounded,
+                          title: '播放缓冲',
+                          subtitle:
+                              '起播预缓冲 '
+                              '${app.playerSettings.bufferMinSec.toStringAsFixed(1)}s · '
+                              '最大缓冲 '
+                              '${app.playerSettings.bufferMaxSec.toStringAsFixed(0)}s',
+                          onTap: () => _editBufferSettings(context, app),
+                        ),
+                        SwitchListTile.adaptive(
+                          value: app.playerSettings.streamCache,
+                          onChanged: (v) => app.setPlayerSettings(
+                            app.playerSettings.copyWith(streamCache: v),
+                          ),
+                          title: const Text('边播边缓存'),
+                          subtitle: const Text(
+                            '把已下行的分片存到本地：重看、拖回看过的位置直接读盘，不再回源',
+                          ),
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                        _ActionRow(
+                          icon: Icons.sd_storage_outlined,
+                          title: '缓存容量上限',
+                          subtitle:
+                              '${app.playerSettings.streamCacheMb} MB'
+                              '（超出后按最久未使用淘汰）',
+                          onTap: () => _pickStreamCacheSize(context, app),
+                        ),
+                        _ActionRow(
+                          icon: Icons.cleaning_services_outlined,
+                          title: '清空播放缓存',
+                          subtitle: '只清理边播缓存目录，不影响收藏 / 历史 / 订阅',
+                          onTap: () => _clearStreamCache(context),
+                        ),
+                        _ActionRow(
+                          icon: Icons.download_outlined,
+                          title: '下载目录',
+                          subtitle:
+                              app.playerSettings.downloadDir.trim().isEmpty
+                              ? '默认：应用数据目录下的 downloads'
+                              : app.playerSettings.downloadDir,
+                          onTap: () => _pickDownloadDir(context, app),
+                        ),
+                        _ActionRow(
+                          icon: Icons.download_done_rounded,
+                          title: '下载管理',
+                          subtitle: app.downloadService.tasks.isEmpty
+                              ? '暂无任务；播放页控制栏的「下载」可加入当前集'
+                              : '${app.downloadService.tasks.length} 个任务 · '
+                                    '${app.downloadService.tasks.where((t) => t.busy).length} 个进行中',
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (context) => const DownloadsPage(),
+                            ),
+                          ),
                         ),
                         _ActionRow(
                           icon: Icons.cloud_download_outlined,
@@ -6409,6 +6468,152 @@ class _SubtitleApiDialogState extends State<_SubtitleApiDialog> {
   }
 }
 
+/// 播放缓冲：起播预缓冲 + 最大缓冲（fvp 的 `bufferRange`）。
+Future<void> _editBufferSettings(BuildContext context, AppState app) async {
+  var minSec = app.playerSettings.bufferMinSec;
+  var maxSec = app.playerSettings.bufferMaxSec;
+  final saved = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setDialog) {
+        final theme = Theme.of(ctx);
+        return AlertDialog(
+          title: const Text('播放缓冲'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '起播预缓冲 ${minSec.toStringAsFixed(1)} 秒',
+                  style: theme.textTheme.bodyMedium,
+                ),
+                Slider(
+                  value: minSec,
+                  min: 0.2,
+                  max: 10,
+                  divisions: 49,
+                  label: '${minSec.toStringAsFixed(1)}s',
+                  onChanged: (v) => setDialog(() => minSec = v),
+                ),
+                Text(
+                  '最大缓冲 ${maxSec.toStringAsFixed(0)} 秒',
+                  style: theme.textTheme.bodyMedium,
+                ),
+                Slider(
+                  value: maxSec,
+                  min: 2,
+                  max: 60,
+                  divisions: 58,
+                  label: '${maxSec.toStringAsFixed(0)}s',
+                  onChanged: (v) => setDialog(() => maxSec = v),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '只对内置 fvp 内核生效：预缓冲越大起播越稳，最大缓冲越大越抗卡顿，'
+                  '代价是更多内存与流量；保存后立即应用到当前播放。',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('保存'),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+  if (saved != true) return;
+  final fixedMax = maxSec < minSec + 0.5 ? minSec + 0.5 : maxSec;
+  await app.setPlayerSettings(
+    app.playerSettings.copyWith(bufferMinSec: minSec, bufferMaxSec: fixedMax),
+  );
+  if (context.mounted) _settingsSnack(context, '播放缓冲已更新，当前播放已应用');
+}
+
+/// 缓存容量上限：给固定档位，避免手填出离谱的值。
+Future<void> _pickStreamCacheSize(BuildContext context, AppState app) async {
+  const options = [256, 512, 1024, 2048, 4096, 8192];
+  final current = app.playerSettings.streamCacheMb;
+  final picked = await showDialog<int>(
+    context: context,
+    builder: (ctx) => SimpleDialog(
+      title: const Text('缓存容量上限'),
+      children: [
+        for (final mb in options)
+          SimpleDialogOption(
+            onPressed: () => Navigator.of(ctx).pop(mb),
+            child: Row(
+              children: [
+                Icon(
+                  mb == current
+                      ? Icons.check_circle_rounded
+                      : Icons.circle_outlined,
+                  size: 18,
+                  color: mb == current
+                      ? Theme.of(ctx).colorScheme.primary
+                      : Theme.of(ctx).disabledColor,
+                ),
+                const SizedBox(width: 10),
+                Text(mb >= 1024 ? '${mb ~/ 1024} GB' : '$mb MB'),
+              ],
+            ),
+          ),
+      ],
+    ),
+  );
+  if (picked == null) return;
+  await app.setPlayerSettings(
+    app.playerSettings.copyWith(streamCacheMb: picked),
+  );
+  if (context.mounted) {
+    _settingsSnack(
+      context,
+      '缓存上限已设为 ${picked >= 1024 ? '${picked ~/ 1024} GB' : '$picked MB'}',
+    );
+  }
+}
+
+/// 清空边播缓存目录。
+Future<void> _clearStreamCache(BuildContext context) async {
+  final bytes = await LocalRelay.instance.streamCacheBytes();
+  if (!context.mounted) return;
+  final size = bytes >= 1024 * 1024 * 1024
+      ? '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB'
+      : '${(bytes / (1024 * 1024)).toStringAsFixed(0)} MB';
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('清空播放缓存'),
+      content: Text('当前占用约 $size。清空后已缓存的分片会重新从网络拉取。'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(false),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(ctx).pop(true),
+          child: const Text('清空'),
+        ),
+      ],
+    ),
+  );
+  if (ok != true) return;
+  await LocalRelay.instance.clearStreamCache();
+  if (context.mounted) _settingsSnack(context, '播放缓存已清空');
+}
+
 Future<void> _pickMagnetDownloadDir(BuildContext context, AppState app) async {
   final current = app.playerSettings.magnetDownloadDir;
   final action = await showDialog<String>(
@@ -6455,6 +6660,52 @@ Future<void> _pickMagnetDownloadDir(BuildContext context, AppState app) async {
     app.playerSettings.copyWith(magnetDownloadDir: path.trim()),
   );
   if (context.mounted) _settingsSnack(context, '磁力下载位置已更新');
+}
+
+/// 视频下载目录：默认落在应用数据目录，可指定任意文件夹。
+Future<void> _pickDownloadDir(BuildContext context, AppState app) async {
+  final current = app.playerSettings.downloadDir.trim();
+  final action = await showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('下载目录'),
+      content: Text(
+        current.isEmpty
+            ? '当前使用默认目录：应用数据目录/downloads。\n\n'
+                  '只影响之后加入队列的任务，已开始的任务不会换目录。'
+            : '当前目录：\n$current\n\n'
+                  '只影响之后加入队列的任务，已开始的任务不会换目录。',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop('reset'),
+          child: const Text('恢复默认'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(ctx).pop('pick'),
+          child: const Text('选择文件夹'),
+        ),
+      ],
+    ),
+  );
+  if (action == 'reset') {
+    await app.setPlayerSettings(app.playerSettings.copyWith(downloadDir: ''));
+    if (context.mounted) _settingsSnack(context, '已恢复默认下载目录');
+    return;
+  }
+  if (action != 'pick') return;
+  final path = await FileDialogService.pickDirectory(
+    confirmButtonText: '选择下载目录',
+  );
+  if (path == null || path.trim().isEmpty) return;
+  await app.setPlayerSettings(
+    app.playerSettings.copyWith(downloadDir: path.trim()),
+  );
+  if (context.mounted) _settingsSnack(context, '下载目录已更新');
 }
 
 Future<void> _editXunlei(BuildContext context, AppState app) async {
