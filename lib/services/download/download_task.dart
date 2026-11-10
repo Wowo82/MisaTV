@@ -35,8 +35,8 @@ class DownloadTask {
   /// 请求头：UA / Referer / Cookie。
   final Map<String, String> headers;
 
-  /// 目标文件绝对路径。
-  final String savePath;
+  /// 目标文件绝对路径。下载前探测出真实类型是 HLS 时会换成 `.ts`。
+  String savePath;
 
   /// 是否按 HLS 清单逐片下载后合并。
   final bool isHls;

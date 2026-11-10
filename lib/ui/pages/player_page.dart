@@ -34,7 +34,6 @@ import '../../services/artwork/artwork_service.dart';
 import '../../services/player/auto_line_switch.dart';
 import '../../services/player/network_speed_smoother.dart';
 import '../../services/player/external_players.dart';
-import '../../services/download/download_service.dart';
 import '../../services/player/skip_segments.dart';
 import '../../services/relay/local_relay.dart';
 import '../../services/jar_spider/hyms_native.dart';
@@ -1769,7 +1768,7 @@ class _PlayerPageState extends State<PlayerPage>
         .toInt();
     final maxMs = (settings.bufferMaxSec * 1000)
         .round()
-        .clamp(minMs + 500, 120000)
+        .clamp(minMs + 500, 180000)
         .toInt();
     try {
       controller.setBufferRange(min: minMs, max: maxMs);
@@ -2510,12 +2509,6 @@ class _PlayerPageState extends State<PlayerPage>
                             active: _skipIntro > 0 || _skipOutro > 0,
                             onTap: _showSkipSettings,
                           ),
-                        ),
-                      if (!_live)
-                        _barAction(
-                          icon: Icons.download_rounded,
-                          label: '下载',
-                          onTap: _downloadCurrent,
                         ),
                       _barAction(
                         icon: Icons.analytics_outlined,
@@ -3699,65 +3692,6 @@ class _PlayerPageState extends State<PlayerPage>
     ];
     final base = parts.join(' / ');
     return _skipInheritedFrom.isEmpty ? base : '$base（本资源共用）';
-  }
-
-  /// 把当前集加入下载队列。
-  ///
-  /// 走 `preparePlay`：需要 Cookie / Referer 的网盘直链会换成中继地址，
-  /// 由本机中继注入请求头，下载和播放走同一条可用链路。是否 HLS 必须按
-  /// **原始**地址判断 —— 中继地址上看不出 `.m3u8`。
-  Future<void> _downloadCurrent() async {
-    final current = _currentPlay;
-    if (current == null || current.url.trim().isEmpty) {
-      _toast('还没有可下载的播放地址');
-      return;
-    }
-    final app = _app;
-    final prepared = app.preparePlay(current);
-    final url = prepared.url.trim();
-    if (url.isEmpty) {
-      _toast('当前地址无法下载');
-      return;
-    }
-    if (app.downloadService.tasks.any((t) => t.busy && t.url == url)) {
-      _toast('这一集已经在下载队列里');
-      return;
-    }
-    final episode = _episodeName.isEmpty ? '第${_index + 1}集' : _episodeName;
-    final title = _detail.name.trim().isEmpty ? '未命名影片' : _detail.name.trim();
-    final dir = app.downloadService.downloadDir;
-    final hls = looksLikeHls(current.url) || looksLikeHls(url);
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('下载当前集'),
-        content: Text(
-          '$title · $episode\n\n'
-          '保存到：${dir.isEmpty ? '（下载目录未就绪）' : dir}\n'
-          '${hls ? '当前是 m3u8 流：按分片顺序合并成一个 .ts（加密流不支持）。' : '直链文件：支持断点续传。'}',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: dir.isEmpty ? null : () => Navigator.of(ctx).pop(true),
-            child: const Text('开始下载'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true || !mounted) return;
-    final task = await app.downloadService.enqueue(
-      title: title,
-      episode: episode,
-      url: url,
-      headers: prepared.headers,
-      isHls: hls,
-    );
-    if (!mounted) return;
-    _toast(task == null ? '无法下载：下载目录未就绪' : '已加入下载队列，可在 设置 → 播放 → 下载管理 查看进度');
   }
 
   Future<void> _castToDevice() async {

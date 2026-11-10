@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -119,15 +120,19 @@ class StreamDiskCache {
   }
 
   /// 未命中时开一个写入口；返回 null 表示这次响应不进缓存。
+  ///
+  /// [length] <= 0 表示上游用 chunked 没有声明长度（网盘分片常见），
+  /// 这种情况照样写入，由 writer 在超过单条上限时自己放弃。
   Future<StreamCacheWriter?> open(
     String key, {
     required String contentType,
     required int length,
   }) async {
     if (dir.isEmpty || !enabled()) return null;
-    if (length <= 0 || length > maxEntryBytes) return null;
+    if (length > maxEntryBytes) return null;
     await _ensureIndex();
-    await _evictFor(length);
+    // 长度未知时按 4MB 预留空间，避免缓存刚好写满后整天不淘汰。
+    await _evictFor(length > 0 ? length : 4 * 1024 * 1024);
     final entry = _entry(key);
     try {
       await entry.parent.create(recursive: true);
@@ -140,7 +145,6 @@ class StreamDiskCache {
         tmp: tmp,
         sink: tmp.openWrite(),
         contentType: contentType,
-        length: length,
       );
     } catch (_) {
       return null;
@@ -232,7 +236,6 @@ class StreamCacheWriter {
     required this.tmp,
     required this.sink,
     required this.contentType,
-    required this.length,
   });
 
   final StreamDiskCache cache;
@@ -240,12 +243,21 @@ class StreamCacheWriter {
   final File entry;
   final File tmp;
   final String contentType;
-  final int length;
   final IOSink sink;
   bool _done = false;
 
+  /// 实际写入的字节数：上游用 chunked 时没有 Content-Length，
+  /// 只能自己数，commit 落库也用这个值。
+  int _written = 0;
+
   void add(List<int> chunk) {
     if (_done) return;
+    _written += chunk.length;
+    if (_written > StreamDiskCache.maxEntryBytes) {
+      // 没声明长度的响应实际是个大文件：放弃这一条，别把盘吃满。
+      unawaited(abort());
+      return;
+    }
     try {
       sink.add(chunk);
     } catch (_) {
@@ -268,7 +280,7 @@ class StreamCacheWriter {
         await File('${entry.path}.json')
             .writeAsString(jsonEncode({'type': contentType}));
       } catch (_) {}
-      cache._put(entry.path, length);
+      cache._put(entry.path, _written);
     } catch (_) {
       await abort();
     }

@@ -565,7 +565,7 @@ class PlayerSettings {
         .clamp(0.2, 30.0)
         .toDouble(),
     bufferMaxSec: ((j['bufferMaxSec'] as num?)?.toDouble() ?? 4.0)
-        .clamp(1.0, 120.0)
+        .clamp(1.0, 180.0)
         .toDouble(),
     streamCache: (j['streamCache'] as bool?) ?? false,
     streamCacheMb: ((j['streamCacheMb'] as num?)?.toInt() ?? 1024)

@@ -6504,8 +6504,8 @@ Future<void> _editBufferSettings(BuildContext context, AppState app) async {
                 Slider(
                   value: maxSec,
                   min: 2,
-                  max: 60,
-                  divisions: 58,
+                  max: 180,
+                  divisions: 178,
                   label: '${maxSec.toStringAsFixed(0)}s',
                   onChanged: (v) => setDialog(() => maxSec = v),
                 ),

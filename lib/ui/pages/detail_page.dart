@@ -14,6 +14,7 @@ import '../../models/vod.dart';
 import '../../services/artwork/artwork_service.dart';
 import '../../services/discover/cover_images.dart';
 import '../../services/discover/discover_models.dart';
+import '../../services/download/download_service.dart';
 import '../../services/drive/drive_line_hint.dart';
 import '../../services/jar_spider/hyms_native.dart';
 import '../../services/mpv_extension.dart';
@@ -918,6 +919,264 @@ class _DetailPageState extends State<DetailPage> {
         .showSnackBar(SnackBar(content: Text(message)));
   }
 
+  /// 详情页批量下载：按当前线路列出全部剧集，勾选后逐集解析并入队。
+  Future<void> _showDownloadPicker(VodDetail detail) async {
+    final app = AppScope.of(context);
+    final flag = _flag;
+    if (flag == null || flag.isEmpty) {
+      _toast('当前没有可用线路');
+      return;
+    }
+    final episodes = detail.episodeList(flag);
+    if (episodes.isEmpty) {
+      _toast('当前线路没有可下载的剧集');
+      return;
+    }
+    final selected = <int>{};
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) {
+        final theme = Theme.of(ctx);
+        return StatefulBuilder(
+          builder: (ctx, setSheet) {
+            final allSelected = selected.length == episodes.length;
+            return SafeArea(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.sizeOf(ctx).height * 0.78,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 0, 12, 6),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '下载剧集',
+                                  style: theme.textTheme.titleMedium,
+                                ),
+                                Text(
+                                  '$flag · 共 ${episodes.length} 集',
+                                  style: theme.textTheme.labelSmall?.copyWith(
+                                    color: theme.colorScheme.onSurface
+                                        .withValues(alpha: 0.6),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: () => setSheet(() {
+                              if (allSelected) {
+                                selected.clear();
+                              } else {
+                                selected.addAll(
+                                  List<int>.generate(
+                                    episodes.length,
+                                    (index) => index,
+                                  ),
+                                );
+                              }
+                            }),
+                            child: Text(allSelected ? '取消全选' : '全选'),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    Flexible(
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: episodes.length,
+                        itemBuilder: (ctx, index) {
+                          return CheckboxListTile(
+                            dense: true,
+                            value: selected.contains(index),
+                            onChanged: (value) => setSheet(() {
+                              if (value == true) {
+                                selected.add(index);
+                              } else {
+                                selected.remove(index);
+                              }
+                            }),
+                            title: Text(episodes[index].name),
+                          );
+                        },
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 10),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '已选 ${selected.length} 集',
+                              style: theme.textTheme.bodySmall,
+                            ),
+                          ),
+                          FilledButton(
+                            onPressed: selected.isEmpty
+                                ? null
+                                : () => Navigator.of(ctx).pop(true),
+                            child: const Text('开始下载'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+    if (confirmed != true || selected.isEmpty) return;
+    final indexes = selected.toList()..sort();
+    await _downloadEpisodes(
+      app: app,
+      detail: detail,
+      flag: flag,
+      episodes: [for (final index in indexes) episodes[index]],
+    );
+  }
+
+  /// 逐集解析播放地址并入队；每集都要单独过一次蜘蛛，源站慢时会等一会儿。
+  Future<void> _downloadEpisodes({
+    required AppState app,
+    required VodDetail detail,
+    required String flag,
+    required List<Episode> episodes,
+  }) async {
+    final site = _site(app);
+    if (site == null) {
+      _toast('找不到对应站点');
+      return;
+    }
+    final progress = ValueNotifier<_DownloadBatchProgress>(
+      _DownloadBatchProgress(0, episodes.length, '准备中…'),
+    );
+    var canceled = false;
+    var ok = 0;
+    var failed = 0;
+    var done = 0;
+    BuildContext? dialogContext;
+    final ready = Completer<void>();
+    final closed = showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        dialogContext = ctx;
+        if (!ready.isCompleted) ready.complete();
+        final theme = Theme.of(ctx);
+        return AlertDialog(
+          title: const Text('正在加入下载队列'),
+          content: ValueListenableBuilder<_DownloadBatchProgress>(
+            valueListenable: progress,
+            builder: (ctx, value, _) => Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                LinearProgressIndicator(
+                  value: value.total <= 0 ? null : value.done / value.total,
+                ),
+                const SizedBox(height: 14),
+                Text('${value.done} / ${value.total}'),
+                const SizedBox(height: 4),
+                Text(
+                  value.name,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall,
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  '每集都要单独解析出播放地址，源站慢时请耐心等',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                canceled = true;
+                Navigator.of(ctx).pop();
+              },
+              child: const Text('停止'),
+            ),
+          ],
+        );
+      },
+    );
+    await ready.future;
+    try {
+      for (var i = 0; i < episodes.length; i++) {
+        if (canceled) break;
+        final episode = episodes[i];
+        progress.value = _DownloadBatchProgress(
+          i,
+          episodes.length,
+          episode.name,
+        );
+        try {
+          final play = await app.sourceService.resolvePlay(
+            site: site,
+            config: app.config ?? const SiteConfig(),
+            flag: flag,
+            rawUrl: episode.url,
+            jarReady: app.jarReady,
+          );
+          final unwrapped = await app.unwrapPlayPage(play);
+          final prepared = app.preparePlay(unwrapped);
+          if (prepared.url.trim().isEmpty) {
+            failed++;
+            continue;
+          }
+          final hls = looksLikeHls(unwrapped.url) || looksLikeHls(prepared.url);
+          final task = await app.downloadService.enqueue(
+            title: detail.name,
+            episode: episode.name,
+            url: prepared.url,
+            headers: prepared.headers,
+            isHls: hls ? true : null,
+          );
+          if (task == null) {
+            failed++;
+          } else {
+            ok++;
+          }
+        } catch (_) {
+          failed++;
+        } finally {
+          done = i + 1;
+        }
+      }
+    } finally {
+      progress.value = _DownloadBatchProgress(done, episodes.length, '完成');
+      if (dialogContext != null && dialogContext!.mounted) {
+        Navigator.of(dialogContext!).pop();
+      }
+      await closed;
+    }
+    if (!mounted) return;
+    final parts = <String>[];
+    if (ok > 0) parts.add('$ok 集已加入队列');
+    if (failed > 0) parts.add('$failed 集解析失败');
+    if (canceled) parts.add('已停止');
+    _toast(parts.isEmpty ? '没有可下载的剧集' : parts.join('，'));
+  }
+
   /// 线路对应的网盘本机能不能直接扫码、现在是否还没登录（决定是否挂锁）。
   bool _needsLogin(AppState app, String flag) {
     final hint = driveHintFromFlag(flag);
@@ -1581,6 +1840,9 @@ class _DetailPageState extends State<DetailPage> {
                     );
                     _toast('名称已复制');
                   },
+                  onDownload: detail == null
+                      ? null
+                      : () => _showDownloadPicker(detail),
                 ),
                 Expanded(
                   child: _loading
@@ -1980,6 +2242,7 @@ class _TopBar extends StatelessWidget {
     required this.onBack,
     required this.onFavorite,
     required this.onCopy,
+    required this.onDownload,
   });
 
   final String title;
@@ -1987,6 +2250,7 @@ class _TopBar extends StatelessWidget {
   final VoidCallback onBack;
   final VoidCallback? onFavorite;
   final VoidCallback onCopy;
+  final VoidCallback? onDownload;
 
   @override
   Widget build(BuildContext context) {
@@ -2011,6 +2275,11 @@ class _TopBar extends StatelessWidget {
                   style: theme.textTheme.titleMedium,
                 ),
               ),
+            ),
+            IconButton(
+              tooltip: '下载剧集',
+              onPressed: onDownload,
+              icon: const Icon(Icons.download_rounded),
             ),
             IconButton(
               tooltip: '复制名称',
@@ -3391,4 +3660,13 @@ class _BtPreparingDialogState extends State<_BtPreparingDialog> {
       ),
     );
   }
+}
+
+/// 批量下载的进度快照：交给对话框里的 `ValueListenableBuilder` 重建。
+class _DownloadBatchProgress {
+  const _DownloadBatchProgress(this.done, this.total, this.name);
+
+  final int done;
+  final int total;
+  final String name;
 }

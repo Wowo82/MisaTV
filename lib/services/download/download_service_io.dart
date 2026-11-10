@@ -65,8 +65,10 @@ class DownloadService extends ChangeNotifier {
     final ext = hls
         ? '.ts'
         : guessMediaExtension(target, contentType: contentType);
+    // 按剧名建子目录：下载目录/剧名/集名.ext，多部剧不会混在一起。
+    final folder = sanitizeFileName(title);
     final base = sanitizeFileName(
-      episode.trim().isEmpty ? title : '$title ${episode.trim()}',
+      episode.trim().isEmpty ? '正片' : episode.trim(),
     );
     final task = DownloadTask(
       id: '${DateTime.now().microsecondsSinceEpoch}',
@@ -74,7 +76,7 @@ class DownloadService extends ChangeNotifier {
       episode: episode.trim(),
       url: target,
       headers: Map<String, String>.from(headers),
-      savePath: _uniquePath(dir, base, ext),
+      savePath: _uniquePath(dir, folder, base, ext),
       isHls: hls,
     );
     _tasks.insert(0, task);
@@ -83,12 +85,13 @@ class DownloadService extends ChangeNotifier {
     return task;
   }
 
-  String _uniquePath(String dir, String base, String ext) {
-    var candidate = p.join(dir, '$base$ext');
+  String _uniquePath(String dir, String folder, String base, String ext) {
+    final targetDir = folder.trim().isEmpty ? dir : p.join(dir, folder);
+    var candidate = p.join(targetDir, '$base$ext');
     var index = 1;
     while (File(candidate).existsSync() ||
         _tasks.any((t) => t.savePath == candidate)) {
-      candidate = p.join(dir, '$base ($index)$ext');
+      candidate = p.join(targetDir, '$base ($index)$ext');
       index++;
     }
     return candidate;
@@ -179,8 +182,21 @@ class DownloadService extends ChangeNotifier {
     _speedMarks.remove(task.id);
     _notify(force: true);
     try {
+      var hls = task.isHls;
+      if (!hls) {
+        // URL 后缀不可靠：`/m3u8/109302?auth_key=...` 这类地址只有响应头
+        // 或首行内容能说明它是清单，探测到就改走分片合并。
+        hls = await _probeIsHls(task.url, task.headers);
+        if (hls) {
+          final dir = p.dirname(task.savePath);
+          final base = p.basenameWithoutExtension(task.savePath);
+          task.savePath = _uniquePath(dir, '', base, '.ts');
+          task.detail = '识别为 HLS';
+          _notify(force: true);
+        }
+      }
       await Directory(p.dirname(task.savePath)).create(recursive: true);
-      if (task.isHls) {
+      if (hls) {
         await _runHls(task, control);
       } else {
         await _runFile(task, control);
@@ -216,6 +232,49 @@ class DownloadService extends ChangeNotifier {
       _speedMarks.remove(task.id);
       if (!task.busy) _controls.remove(task.id);
       _notify(force: true);
+    }
+  }
+
+  /// 探测地址是不是 HLS 清单。
+  ///
+  /// 很多源的播放地址长这样：`https://host/m3u8/109302?auth_key=...`，
+  /// 路径里没有 `.m3u8`，只看后缀会把清单文本当视频存下来。这里读响应头
+  /// 和前 32 字节（`#EXTM3U`）判断；探测失败一律按普通文件处理，不阻断下载。
+  Future<bool> _probeIsHls(String url, Map<String, String> headers) async {
+    try {
+      final response = await _get(url, headers, range: 'bytes=0-1023');
+      final type = (response.headers.contentType?.mimeType ?? '').toLowerCase();
+      if (type.contains('mpegurl')) {
+        await response.drain<void>();
+        return true;
+      }
+      final bytes = <int>[];
+      final done = Completer<void>();
+      late StreamSubscription<List<int>> sub;
+      sub = response.listen(
+        (chunk) {
+          bytes.addAll(chunk);
+          if (bytes.length >= 32) {
+            unawaited(sub.cancel());
+            if (!done.isCompleted) done.complete();
+          }
+        },
+        onDone: () {
+          if (!done.isCompleted) done.complete();
+        },
+        onError: (Object error, StackTrace stack) {
+          if (!done.isCompleted) done.complete();
+        },
+        cancelOnError: true,
+      );
+      await done.future.timeout(const Duration(seconds: 8), onTimeout: () {});
+      try {
+        await sub.cancel();
+      } catch (_) {}
+      final head = utf8.decode(bytes.take(32).toList(), allowMalformed: true);
+      return head.trimLeft().startsWith('#EXTM3U');
+    } catch (_) {
+      return false;
     }
   }
 
@@ -381,7 +440,7 @@ class DownloadService extends ChangeNotifier {
     try {
       return utf8.decode(bytes);
     } catch (_) {
-      return latin1.decode(bytes, allowInvalid: true);
+      return const Latin1Codec(allowInvalid: true).decode(bytes);
     }
   }
 

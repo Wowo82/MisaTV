@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../../app.dart';
 import '../../core/theme/app_theme.dart';
 import '../../services/runtime_extension.dart';
+import '../pages/downloads_page.dart';
 import '../pages/favorites_page.dart';
 import '../pages/history_page.dart';
 import '../pages/home_page.dart';
@@ -72,6 +73,11 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
       icon: Icons.favorite_rounded,
       outline: Icons.favorite_border_rounded,
       label: '收藏',
+    ),
+    _NavItem(
+      icon: Icons.download_rounded,
+      outline: Icons.download_outlined,
+      label: '下载',
     ),
     _NavItem(
       icon: Icons.settings_rounded,
@@ -159,7 +165,8 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
   Future<void> _revealRuntimeInstall(RuntimeExtension kind) async {
     if (!mounted) return;
     Navigator.of(context).popUntil((route) => route.isFirst);
-    _select(5);
+    // 设置永远在最后一项，用长度取索引，避免以后加 tab 又要改这里。
+    _select(_items.length - 1);
     await WidgetsBinding.instance.endOfFrame;
     if (!mounted) return;
     await _settingsKey.currentState?.revealRuntime(kind);
@@ -246,6 +253,7 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
         const LivePage(),
         const HistoryPage(),
         const FavoritesPage(),
+        const DownloadsPage(),
         SettingsPage(key: _settingsKey),
       ],
     );
