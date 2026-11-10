@@ -39,6 +39,7 @@ import '../widgets/empty_state.dart';
 import '../widgets/glass.dart';
 import '../widgets/import_sheet.dart';
 import '../widgets/name_input_dialog.dart';
+import '../widgets/proxy_pool_sheet.dart';
 import '../widgets/uc_tv_login_dialog.dart';
 import '../widgets/xunlei_login_dialog.dart';
 import 'dav_browse_page.dart';
@@ -954,6 +955,16 @@ class SettingsPageState extends State<SettingsPage> {
                           subtitle: app.proxy.summary,
                           onTap: () => _editProxy(context),
                         ),
+                        // 隐藏项：在底部导航「设置」上连点 5 次才出现。
+                        if (app.proxyPoolUnlocked)
+                          _ActionRow(
+                            icon: Icons.lan_rounded,
+                            title: '代理池',
+                            subtitle: app.proxyPool.enabled
+                                ? '已启用：${app.proxyPool.selectedLabel}'
+                                : '直连 · ${app.proxyPool.nodes.length} 个节点',
+                            onTap: () => showProxyPoolSheet(context, app),
+                          ),
                         _ActionRow(
                           icon: Icons.aspect_ratio_rounded,
                           title: '画面比例',

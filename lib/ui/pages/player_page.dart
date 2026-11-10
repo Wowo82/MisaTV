@@ -2500,6 +2500,13 @@ class _PlayerPageState extends State<PlayerPage>
                           active: _subtitleStatus.isNotEmpty,
                           onTap: _showSubtitlePanel,
                         ),
+                      // 多音轨的视频直接给入口，不用再进「播放设置」里翻。
+                      if (_mdkEnabled && !_live && _audioOptions.length > 1)
+                        _barAction(
+                          icon: Icons.graphic_eq_rounded,
+                          label: '音轨',
+                          onTap: _showAudioTracks,
+                        ),
                       if (!_live)
                         Tooltip(
                           message: '跳过片头 / 片尾：${_skipSummary()}',

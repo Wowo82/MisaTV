@@ -39,6 +39,7 @@ import '../services/live_service.dart';
 import '../services/local_store.dart';
 import '../services/parse/parse_service.dart';
 import '../services/play_page_unwrap.dart';
+import '../services/proxy/proxy_pool_service.dart';
 import '../services/quotes/quote_service.dart';
 import '../services/search_service.dart';
 import '../services/source_service.dart';
@@ -106,6 +107,15 @@ class AppState extends ChangeNotifier {
 
   /// 视频下载：桌面端在 main 里注入目录，Web 版是空实现。
   late final DownloadService downloadService = DownloadService();
+
+  /// 免费代理池：设置页连点解锁后才显示，选中节点直接套进内置代理桥。
+  late final ProxyPoolService proxyPool = ProxyPoolService(
+    store: store,
+    applyProxy: setProxy,
+  );
+
+  /// 代理池入口是否已解锁（设置页连点 5 次）。
+  bool proxyPoolUnlocked = false;
 
   /// 磁力（BT）播放编排：桌面端在 main 里注入；Web 版为 null。
   TorrentPlay? torrentPlay;
@@ -602,6 +612,11 @@ class AppState extends ChangeNotifier {
     sourceService.jar.setKeepHostsWarm(playerSettings.keepSpiderHosts);
     proxy = ProxyConfig.fromJsonString(store.proxyJson);
     await ProxyRuntime.instance.apply(proxy);
+    proxyPoolUnlocked = store.proxyPoolUnlocked;
+    proxyPool.load();
+    // 上次选中的节点要重新套进代理桥；列表超过一天就后台静默更新。
+    unawaited(proxyPool.restoreSelection());
+    unawaited(proxyPool.autoRefreshIfDue());
     skipSegments = store.loadSkipSegments();
     driveAccounts = store.loadDriveAccounts();
     xunleiCloudService.load();
@@ -2690,6 +2705,14 @@ class AppState extends ChangeNotifier {
     await sourceService.jar.resetForNetworkChange();
     notifyListeners();
     AppLog.i('proxy', '内置代理已更新：${next.summary}');
+  }
+
+  /// 解锁代理池入口（设置页连点 5 次），解锁状态持久化。
+  Future<void> unlockProxyPool() async {
+    if (proxyPoolUnlocked) return;
+    proxyPoolUnlocked = true;
+    await store.setProxyPoolUnlocked(true);
+    notifyListeners();
   }
 
   /// 本集应使用的跳过设置（本集记录 → 同资源最近一次设置）。

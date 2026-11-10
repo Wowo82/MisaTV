@@ -42,6 +42,8 @@ class LocalStore {
   static const kSkipSegments = 'kniephos.skipSegments';
   static const kDavServers = 'kniephos.davServers';
   static const kProxy = 'kniephos.proxy';
+  static const kProxyPool = 'kniephos.proxyPool';
+  static const kProxyPoolUnlocked = 'kniephos.proxyPoolUnlocked';
   static const kWindowSize = 'kniephos.windowSize';
 
   static Future<LocalStore> create() async {
@@ -241,6 +243,21 @@ class LocalStore {
       await _prefs.setString(kProxy, json);
     }
   }
+
+  /// 代理池（JSON：nodes / selected / fetchedAt）。
+  String get proxyPoolJson => _prefs.getString(kProxyPool) ?? '';
+  Future<void> setProxyPoolJson(String json) async {
+    if (json.trim().isEmpty) {
+      await _prefs.remove(kProxyPool);
+    } else {
+      await _prefs.setString(kProxyPool, json);
+    }
+  }
+
+  /// 代理池入口是否已解锁（设置页连点 5 次）。
+  bool get proxyPoolUnlocked => _prefs.getBool(kProxyPoolUnlocked) ?? false;
+  Future<void> setProxyPoolUnlocked(bool value) =>
+      _prefs.setBool(kProxyPoolUnlocked, value);
 
   /// 记忆的启动窗口大小（`宽x高`，逻辑像素）；null = 未记忆。
   Size? loadWindowSize() {
