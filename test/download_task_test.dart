@@ -46,6 +46,47 @@ void main() {
     });
   });
 
+  group('任务存档', () {
+    test('JSON 往返保留进度、请求头与状态', () {
+      final task = DownloadTask(
+        id: '123',
+        title: '折月亮',
+        episode: '第1集',
+        url: 'http://127.0.0.1:9978/play?p=abc',
+        headers: const {'Referer': 'https://a.com', 'User-Agent': 'UA'},
+        savePath: r'G:\tv\折月亮\第1集.ts',
+        isHls: true,
+        totalBytes: 1000,
+        receivedBytes: 400,
+        status: DownloadStatus.queued,
+      )..detail = '3/12 片';
+      final back = DownloadTask.fromJson(task.toJson());
+      expect(back.id, '123');
+      expect(back.title, '折月亮');
+      expect(back.episode, '第1集');
+      expect(back.url, task.url);
+      expect(back.headers['Referer'], 'https://a.com');
+      expect(back.savePath, task.savePath);
+      expect(back.isHls, isTrue);
+      expect(back.totalBytes, 1000);
+      expect(back.receivedBytes, 400);
+      expect(back.status, DownloadStatus.queued);
+      expect(back.detail, '3/12 片');
+    });
+
+    test('未知状态按已暂停处理，缺字段不崩', () {
+      final back = DownloadTask.fromJson({
+        'id': 'x',
+        'url': 'https://a/b.mp4',
+        'savePath': r'G:\tv\b.mp4',
+        'status': 'weird',
+      });
+      expect(back.status, DownloadStatus.paused);
+      expect(back.title, isEmpty);
+      expect(back.headers, isEmpty);
+    });
+  });
+
   group('HLS 清单解析', () {
     test('媒体清单：相对地址按 base 解析', () {
       final playlist = parseHlsPlaylist(

@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 
 import '../../core/logging/app_log.dart';
+import '../local_store.dart';
 import 'download_task.dart';
 
 /// 视频下载：串行队列 + 单文件断点续传 + HLS 逐片合并。
@@ -13,7 +14,10 @@ import 'download_task.dart';
 /// 只做「把地址落到本地文件」：直链 MP4 直接写盘；m3u8 按清单顺序拉分片
 /// 拼成 `.ts`。带 AES-128 的加密流不处理 —— 宁可明确报错，也不产出坏文件。
 class DownloadService extends ChangeNotifier {
-  DownloadService();
+  DownloadService({this.store});
+
+  /// 任务存档用的本地存储；为空时纯内存（Web / 测试）。
+  final LocalStore? store;
 
   final List<DownloadTask> _tasks = [];
   final Map<String, _Control> _controls = {};
@@ -24,6 +28,9 @@ class DownloadService extends ChangeNotifier {
   bool _pumping = false;
   DateTime _lastNotify = DateTime.fromMillisecondsSinceEpoch(0);
 
+  /// 任务存档的落盘节流：进度回调很密，没必要每次都写 shared_preferences。
+  DateTime _lastPersist = DateTime.fromMillisecondsSinceEpoch(0);
+
   List<DownloadTask> get tasks => List.unmodifiable(_tasks);
 
   /// 注入目录：`defaultDir` 是应用数据目录下的 downloads，
@@ -31,6 +38,71 @@ class DownloadService extends ChangeNotifier {
   void configure({required String defaultDir, String Function()? customDir}) {
     _defaultDir = defaultDir;
     _customDir = customDir ?? () => '';
+  }
+
+  /// 从存档恢复任务。
+  ///
+  /// 上次退出时处于「排队 / 下载中」的条目改回排队并自动续跑；用户主动暂停的
+  /// 保持暂停；已完成 / 失败只保留最近若干条，防止列表越积越长。
+  void load() {
+    final raw = store?.downloadTasksJson ?? '';
+    if (raw.trim().isEmpty) return;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return;
+      final restored = <DownloadTask>[];
+      for (final item in decoded) {
+        if (item is! Map) continue;
+        final task = DownloadTask.fromJson(Map<String, Object?>.from(item));
+        if (task.id.isEmpty || task.url.isEmpty || task.savePath.isEmpty) {
+          continue;
+        }
+        if (task.status == DownloadStatus.running) {
+          task.status = DownloadStatus.queued;
+        }
+        restored.add(task);
+      }
+      final unfinished = restored
+          .where(
+            (task) =>
+                task.status == DownloadStatus.queued ||
+                task.status == DownloadStatus.paused ||
+                task.status == DownloadStatus.running,
+          )
+          .toList();
+      final failed = restored
+          .where((task) => task.status == DownloadStatus.failed)
+          .take(20)
+          .toList();
+      final done = restored
+          .where((task) => task.status == DownloadStatus.done)
+          .take(30)
+          .toList();
+      _tasks
+        ..clear()
+        ..addAll([...unfinished, ...failed, ...done]);
+      _lastPersist = DateTime.now();
+      notifyListeners();
+      if (_tasks.any((task) => task.status == DownloadStatus.queued)) {
+        unawaited(_pump());
+      }
+    } catch (_) {
+      // 存档损坏就当没有任务，不能拖累启动。
+    }
+  }
+
+  /// 任务列表落盘：默认 2 秒节流，`force` 立即写。
+  Future<void> _persist({bool force = false}) async {
+    final target = store;
+    if (target == null) return;
+    final now = DateTime.now();
+    if (!force && now.difference(_lastPersist).inMilliseconds < 2000) return;
+    _lastPersist = now;
+    try {
+      await target.setDownloadTasksJson(
+        jsonEncode([for (final task in _tasks.take(200)) task.toJson()]),
+      );
+    } catch (_) {}
   }
 
   String get downloadDir {
@@ -475,6 +547,8 @@ class DownloadService extends ChangeNotifier {
     }
     _updateSpeeds();
     notifyListeners();
+    // 进度、状态变化都顺手存一份，进程被强杀也能恢复。
+    unawaited(_persist(force: force));
   }
 
   void _updateSpeeds() {
@@ -503,6 +577,7 @@ class DownloadService extends ChangeNotifier {
     for (final control in _controls.values) {
       control.canceled = true;
     }
+    unawaited(_persist(force: true));
     _client?.close(force: true);
     _client = null;
     super.dispose();

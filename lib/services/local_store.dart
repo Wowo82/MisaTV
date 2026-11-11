@@ -44,6 +44,7 @@ class LocalStore {
   static const kProxy = 'kniephos.proxy';
   static const kProxyPool = 'kniephos.proxyPool';
   static const kProxyPoolUnlocked = 'kniephos.proxyPoolUnlocked';
+  static const kDownloadTasks = 'kniephos.downloadTasks';
   static const kWindowSize = 'kniephos.windowSize';
 
   static Future<LocalStore> create() async {
@@ -258,6 +259,16 @@ class LocalStore {
   bool get proxyPoolUnlocked => _prefs.getBool(kProxyPoolUnlocked) ?? false;
   Future<void> setProxyPoolUnlocked(bool value) =>
       _prefs.setBool(kProxyPoolUnlocked, value);
+
+  /// 下载任务存档（JSON 数组）：重启后恢复未完成任务。
+  String get downloadTasksJson => _prefs.getString(kDownloadTasks) ?? '';
+  Future<void> setDownloadTasksJson(String json) async {
+    if (json.trim().isEmpty) {
+      await _prefs.remove(kDownloadTasks);
+    } else {
+      await _prefs.setString(kDownloadTasks, json);
+    }
+  }
 
   /// 记忆的启动窗口大小（`宽x高`，逻辑像素）；null = 未记忆。
   Size? loadWindowSize() {

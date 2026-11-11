@@ -62,6 +62,53 @@ class DownloadTask {
 
   bool get busy =>
       status == DownloadStatus.queued || status == DownloadStatus.running;
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'title': title,
+    'episode': episode,
+    'url': url,
+    'headers': headers,
+    'savePath': savePath,
+    'isHls': isHls,
+    'totalBytes': totalBytes,
+    'receivedBytes': receivedBytes,
+    'status': status.name,
+    'error': error,
+    'detail': detail,
+  };
+
+  /// 从存档恢复。未知状态按「已暂停」处理，避免一启动就当成在跑。
+  factory DownloadTask.fromJson(Map<String, Object?> json) {
+    final rawStatus = (json['status'] ?? '').toString();
+    final status = DownloadStatus.values.firstWhere(
+      (value) => value.name == rawStatus,
+      orElse: () => DownloadStatus.paused,
+    );
+    final rawHeaders = json['headers'];
+    return DownloadTask(
+      id: (json['id'] ?? '').toString(),
+      title: (json['title'] ?? '').toString(),
+      episode: (json['episode'] ?? '').toString(),
+      url: (json['url'] ?? '').toString(),
+      headers: rawHeaders is Map
+          ? {
+              for (final entry in rawHeaders.entries)
+                entry.key.toString(): entry.value.toString(),
+            }
+          : const {},
+      savePath: (json['savePath'] ?? '').toString(),
+      isHls: json['isHls'] == true,
+      totalBytes: json['totalBytes'] is num
+          ? (json['totalBytes'] as num).toInt()
+          : 0,
+      receivedBytes: json['receivedBytes'] is num
+          ? (json['receivedBytes'] as num).toInt()
+          : 0,
+      status: status,
+      error: (json['error'] ?? '').toString(),
+    )..detail = (json['detail'] ?? '').toString();
+  }
 }
 
 /// Windows 不允许的字符 + 控制字符。`/` 与 `\` 一并换掉，避免拼出多级目录。

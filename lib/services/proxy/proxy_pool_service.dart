@@ -42,6 +42,11 @@ class ProxyPoolService extends ChangeNotifier {
 
   String get selectedLabel => selected?.address ?? '直连';
 
+  /// 失败后的冷却：网络被墙时不要每次启动都连打好几次。
+  static const retryCooldown = Duration(minutes: 10);
+
+  int _lastAttempt = 0;
+
   /// 距离上次拉取是否已超过 24 小时（从没拉过也算到期）。
   bool get due {
     if (fetchedAt <= 0) return true;
@@ -81,6 +86,12 @@ class ProxyPoolService extends ChangeNotifier {
 
   Future<void> autoRefreshIfDue() async {
     if (!due || refreshing) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (_lastAttempt > 0 && now - _lastAttempt < retryCooldown.inMilliseconds) {
+      // 上一次刚失败过：冷却期内不再自动重试，手动刷新不受影响。
+      return;
+    }
+    _lastAttempt = now;
     await refresh();
   }
 

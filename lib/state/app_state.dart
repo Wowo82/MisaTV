@@ -106,7 +106,7 @@ class AppState extends ChangeNotifier {
   late final DavService davService = DavService(store);
 
   /// 视频下载：桌面端在 main 里注入目录，Web 版是空实现。
-  late final DownloadService downloadService = DownloadService();
+  late final DownloadService downloadService = DownloadService(store: store);
 
   /// 免费代理池：设置页连点解锁后才显示，选中节点直接套进内置代理桥。
   late final ProxyPoolService proxyPool = ProxyPoolService(

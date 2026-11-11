@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../app.dart';
 import '../../services/download/download_service.dart';
+import '../../services/open_folder.dart';
 import '../widgets/empty_state.dart';
 
 /// 下载管理：任务列表、进度、暂停 / 继续 / 取消、打开目录。
@@ -58,12 +58,7 @@ class DownloadsPage extends StatelessWidget {
 
 Future<void> _openFolder(BuildContext context, String path) async {
   if (path.trim().isEmpty) return;
-  var ok = false;
-  try {
-    ok = await launchUrl(Uri.file(path));
-  } catch (_) {
-    ok = false;
-  }
+  final ok = await openFolder(path);
   if (!ok && context.mounted) {
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text('打不开目录，请手动前往：$path')));

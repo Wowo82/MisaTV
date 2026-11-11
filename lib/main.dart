@@ -140,6 +140,8 @@ Future<void> _bootstrap() async {
       defaultDir: p.join(support, 'downloads'),
       customDir: () => state.playerSettings.downloadDir,
     );
+    // 恢复上次未完成的下载任务（排队中的会自动续跑）。
+    state.downloadService.load();
     appShutdown = () async {
       await sourceService.shutdown();
       torrentPlay.dispose();
