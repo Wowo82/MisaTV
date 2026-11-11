@@ -91,11 +91,10 @@ class JvmRuntime {
     // 桌面版 GoProxy 影子类：加固壳的 ARM Go 取流 .so 在 unidbg 里被跳过，
     // 但壳初始化会等它的 /health。这个 jar 用纯 Java 同端口应答，数据请求本身走 okhttp。
     'assets/jvm/go-proxy-shim.jar': 'shims/go-proxy-shim.jar',
-    // 加固壳的「真实实现」预解包产物（对齐 winbox 的 shell-shim/real/<壳名>.jar）：
-    // 拿到对应壳时直接纯 Java 运行，不再依赖 unidbg 模拟器（实测 ftyshinidie 壳
-    // 在 x64 上模拟会崩在 toIntPeer(null)）。
-    'assets/jvm/shell-real/ftyshinidie.jar': 'shell-shim/real/ftyshinidie.jar',
-    'assets/jvm/shell-real/foni-spider.jar': 'shell-shim/real/foni-spider.jar',
+    // 注意：`shell-real/*.jar` 是第三方加固殼的解包產物，**不隨源碼/安裝包分發**
+    // （見 assets/jvm/shell-real/README.md）。把它們列進 _bundled 會讓每次安裝
+    // 都去 load 一個不存在的 asset，UI 上就顯示「Unable to load asset」。
+    // 沒有這些文件時 JVM 會回退到 unidbg 原生解包，功能不受影響（首次慢 20-30 秒）。
   };
 
   final ValueNotifier<JvmProgress?> progress = ValueNotifier(null);
