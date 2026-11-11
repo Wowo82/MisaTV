@@ -38,6 +38,18 @@ class SpiderEnv {
     'baidu': 'Wex_baidu_cookie',
   };
 
+  /// 移動雲盤（139 / pan139）在 wex 系裡的鍵名不統一，不同殼各讀各的，
+  /// 這裡把常見寫法全部寫一份；讀錯的鍵蜘蛛會忽略，不會有副作用。
+  static const _wexMobileKeys = <String>[
+    'Wex_mobile_cookie',
+    'Wex_139_cookie',
+    'Wex_pan139_cookie',
+    'Wex_pan139Cookie',
+  ];
+
+  /// 同上，`files/TV/` 下的裸 cookie 檔名。
+  static const _wexMobileFiles = <String>['.mobilecookie', '.139cookie'];
+
   static const _wexPrefsName = 'NewWexFnw_preferences';
 
   /// Pizazz 通道：provider → 文件名。
@@ -46,6 +58,13 @@ class SpiderEnv {
     'uc': 'uc_cookie.txt',
     'baidu': 'baidu.txt',
   };
+
+  /// 移動雲盤在 pizazz 通道的別名檔名。
+  static const _pizazzMobileFiles = <String>[
+    'mobile_cookie.txt',
+    '139_cookie.txt',
+    'pan139_cookie.txt',
+  ];
 
   /// 同步一次（文件都很小，每次调用都重写；内容未变时写入是幂等的）。
   ///
@@ -110,6 +129,16 @@ class SpiderEnv {
       dir.createSync(recursive: true);
       file.writeAsStringSync(value, flush: true);
     });
+    final mobile = cookies['mobile'] ?? '';
+    for (final name in _wexMobileFiles) {
+      final file = File(p.join(dir.path, name));
+      if (mobile.isEmpty) {
+        _delete(file);
+        continue;
+      }
+      dir.createSync(recursive: true);
+      file.writeAsStringSync(mobile, flush: true);
+    }
   }
 
   /// 通道 2：SharedPreferences 种子（内置 prefs-shim 读 `<base>/shared_prefs/seed.txt`）。
@@ -123,6 +152,9 @@ class SpiderEnv {
       for (final entry in _wexPrefKeys.entries)
         if ((cookies[entry.key] ?? '').isNotEmpty)
           '$_wexPrefsName\t${entry.value}\t${_clean(cookies[entry.key]!)}',
+      for (final key in _wexMobileKeys)
+        if ((cookies['mobile'] ?? '').isNotEmpty)
+          '$_wexPrefsName\t$key\t${_clean(cookies['mobile']!)}',
       for (final entry in seed.entries)
         '$_wexPrefsName\t${entry.key}\t${_clean(entry.value)}',
       // 桌面端没有 Go 代理（ARM32 + Android root 场景），强制 Java 多线程取流；
@@ -174,6 +206,17 @@ class SpiderEnv {
       dir.createSync(recursive: true);
       file.writeAsStringSync(jsonEncode(body), flush: true);
     }
+    // 移動雲盤在 pizazz 通道的檔名同樣不統一，幾個都寫一份。
+    final mobile = cookies['mobile'] ?? '';
+    for (final name in _pizazzMobileFiles) {
+      final file = File(p.join(dir.path, name));
+      if (mobile.isEmpty) {
+        _delete(file);
+        continue;
+      }
+      dir.createSync(recursive: true);
+      file.writeAsStringSync(jsonEncode({'cookie': mobile}), flush: true);
+    }
   }
 
   /// 通道 4：fty 系 `Cloud-drive` 配置（源在 init 时读取 quarkCookie / ucCookie）。
@@ -211,10 +254,16 @@ class SpiderEnv {
         final value = cookies[entry.key] ?? '';
         if (value.isNotEmpty) obj[entry.value] = value;
       }
-      // 139 系（pan139）蜘蛛认这个键名，和 mobileCookie 同时写一份。
+      // 139 系（pan139）蜘蛛的鍵名各寫各的，常見幾種全寫一份。
       obj.remove('pan139Cookie');
+      obj.remove('139Cookie');
+      obj.remove('mobile');
       final mobile = cookies['mobile'] ?? '';
-      if (mobile.isNotEmpty) obj['pan139Cookie'] = mobile;
+      if (mobile.isNotEmpty) {
+        obj['pan139Cookie'] = mobile;
+        obj['139Cookie'] = mobile;
+        obj['mobile'] = mobile;
+      }
       try {
         file.parent.createSync(recursive: true);
         file.writeAsStringSync(jsonEncode(obj), flush: true);
