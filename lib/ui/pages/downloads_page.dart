@@ -39,7 +39,8 @@ class DownloadsPage extends StatelessWidget {
             );
           }
           return ListView.separated(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
+            // 底部多留一段：提示条浮在导航上方，滚到底时不会盖住最后一条的操作。
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 120),
             itemCount: tasks.length + 1,
             separatorBuilder: (context, index) => const SizedBox(height: 10),
             itemBuilder: (context, index) {

@@ -36,6 +36,9 @@ class ProxyPoolService extends ChangeNotifier {
   bool testing = false;
   String error = '';
 
+  /// 存档是否已读入：读完之前不要用网络代理配置反推选中项。
+  bool _loaded = false;
+
   bool get enabled => selectedId.isNotEmpty;
 
   ProxyNode? get selected => _find(selectedId);
@@ -55,6 +58,7 @@ class ProxyPoolService extends ChangeNotifier {
   }
 
   void load() {
+    _loaded = true;
     final raw = store.proxyPoolJson;
     if (raw.trim().isEmpty) return;
     try {
@@ -246,6 +250,30 @@ class ProxyPoolService extends ChangeNotifier {
     }
     await _save();
     notifyListeners();
+  }
+
+  /// 网络代理设置变化时同步池内选中状态：关掉代理就回到直连。
+  ///
+  /// 只改选中标记与存档，不再回调 `applyProxy`，避免和 [select] 互相递归。
+  void syncFromConfig(ProxyConfig config) {
+    if (!_loaded) return;
+    final next = config.enabled ? _matchId(config) : '';
+    if (next == selectedId) return;
+    selectedId = next;
+    unawaited(_save());
+    notifyListeners();
+  }
+
+  String _matchId(ProxyConfig config) {
+    final host = config.host.trim();
+    for (final node in nodes) {
+      if (node.type == config.type &&
+          node.host == host &&
+          node.port == config.port) {
+        return node.id;
+      }
+    }
+    return '';
   }
 
   Future<int> _probe(String host, int port) async {

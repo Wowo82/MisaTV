@@ -13,6 +13,19 @@ void main() {
       expect(playerFitLabel('ratio169'), '强制 16:9');
     });
 
+    test('下载方式默认内置，非法值归一', () {
+      expect(PlayerSettings.fromJson({}).downloader, 'builtin');
+      expect(PlayerSettings.fromJson({'downloader': 'idm'}).downloader, 'idm');
+      expect(
+        PlayerSettings.fromJson({'downloader': 'weird'}).downloader,
+        'builtin',
+      );
+      final back = PlayerSettings.fromJson(
+        PlayerSettings(downloader: 'idm').toJson(),
+      );
+      expect(back.downloader, 'idm');
+    });
+
     test('设置 JSON 往返保留画面比例与性能开关', () {
       final settings = PlayerSettings.fromJson({
         'speed': 1.25,

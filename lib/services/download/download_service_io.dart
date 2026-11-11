@@ -25,6 +25,9 @@ class DownloadService extends ChangeNotifier {
   HttpClient? _client;
   String _defaultDir = '';
   String Function() _customDir = () => '';
+
+  /// 下载方式：`builtin` 内置，`idm` 交给 Internet Download Manager。
+  String Function() _downloader = () => 'builtin';
   bool _pumping = false;
   DateTime _lastNotify = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -35,9 +38,14 @@ class DownloadService extends ChangeNotifier {
 
   /// 注入目录：`defaultDir` 是应用数据目录下的 downloads，
   /// `customDir` 由设置页的「下载目录」实时提供，非空时优先。
-  void configure({required String defaultDir, String Function()? customDir}) {
+  void configure({
+    required String defaultDir,
+    String Function()? customDir,
+    String Function()? downloader,
+  }) {
     _defaultDir = defaultDir;
     _customDir = customDir ?? () => '';
+    _downloader = downloader ?? () => 'builtin';
   }
 
   /// 从存档恢复任务。
@@ -221,6 +229,10 @@ class DownloadService extends ChangeNotifier {
       final part = File('${task.savePath}.part');
       if (await part.exists()) await part.delete();
     } catch (_) {}
+    try {
+      final parts = Directory('${task.savePath}.parts');
+      if (await parts.exists()) await parts.delete(recursive: true);
+    } catch (_) {}
   }
 
   Future<void> _pump() async {
@@ -270,6 +282,13 @@ class DownloadService extends ChangeNotifier {
       await Directory(p.dirname(task.savePath)).create(recursive: true);
       if (hls) {
         await _runHls(task, control);
+      } else if (_downloader() == 'idm' && await _sendToIdm(task)) {
+        // 交给 IDM 后本进程不再接管：标成已完成，进度由 IDM 自己显示。
+        task.status = DownloadStatus.done;
+        task.detail = '已交给 IDM';
+        task.receivedBytes = 0;
+        task.totalBytes = 0;
+        return;
       } else {
         await _runFile(task, control);
       }
@@ -305,6 +324,42 @@ class DownloadService extends ChangeNotifier {
       if (!task.busy) _controls.remove(task.id);
       _notify(force: true);
     }
+  }
+
+  /// 把直链交给 IDM：`/d 地址 /p 目录 /f 文件名 /a`（加入队列并开始）。
+  ///
+  /// 只对非 HLS 调用 —— IDM 不认 m3u8，丢给它只会存下一个清单文件。
+  Future<bool> _sendToIdm(DownloadTask task) async {
+    final exe = _findIdm();
+    if (exe == null) return false;
+    try {
+      final dir = p.dirname(task.savePath);
+      await Directory(dir).create(recursive: true);
+      await Process.start(exe, [
+        '/d',
+        task.url,
+        '/p',
+        dir,
+        '/f',
+        p.basename(task.savePath),
+        '/a',
+      ], mode: ProcessStartMode.detached);
+      return true;
+    } catch (error) {
+      AppLog.w('download', '调用 IDM 失败：$error');
+      return false;
+    }
+  }
+
+  String? _findIdm() {
+    const candidates = [
+      r'C:\Program Files (x86)\Internet Download Manager\IDMan.exe',
+      r'C:\Program Files\Internet Download Manager\IDMan.exe',
+    ];
+    for (final path in candidates) {
+      if (File(path).existsSync()) return path;
+    }
+    return null;
   }
 
   /// 探测地址是不是 HLS 清单。
@@ -367,9 +422,12 @@ class DownloadService extends ChangeNotifier {
     );
     var append = offset > 0;
     if (offset > 0 && response.statusCode == 200) {
-      // 服务端不认 Range：只能从头写，别把两份拼在一起。
+      // 服务端不认 Range：只能从头写，别把两份拼在一起。明确告诉用户，
+      // 免得以为「续传又失败了」。
       append = false;
       offset = 0;
+      task.detail = '服务器不支持续传，已从头开始';
+      _notify(force: true);
     } else if (offset > 0 && response.statusCode != 206) {
       await response.drain<void>();
       throw '续传失败（HTTP ${response.statusCode}）';
@@ -451,51 +509,104 @@ class DownloadService extends ChangeNotifier {
     task.totalBytes = 0;
     task.receivedBytes = 0;
     task.detail = '0/${urls.length} 片';
-    final part = File('${task.savePath}.part');
-    await _deletePart(task);
-    final sink = part.openWrite();
+    // 分片先落在 `<目标>.parts/` 下，一片一个文件：中断或重启后只看哪些片
+    // 已经存在，跳过不重下，这才是真正的断点续传。
+    final partsDir = Directory('${task.savePath}.parts');
+    await partsDir.create(recursive: true);
     var index = 0;
     try {
-      for (final url in urls) {
+      for (var i = 0; i < urls.length; i++) {
         if (control.canceled) throw const _CanceledException();
         if (control.paused) return;
-        final response = await _get(url, task.headers);
+        final segment = File('${partsDir.path}${p.separator}$i.seg');
+        if (await segment.exists()) {
+          final length = await segment.length();
+          if (length > 0) {
+            task.receivedBytes += length;
+            index = i + 1;
+            task.detail = '$index/${urls.length} 片（续）';
+            _notify();
+            continue;
+          }
+          // 上次留下的空片，删掉重下。
+          try {
+            await segment.delete();
+          } catch (_) {}
+        }
+        final response = await _get(urls[i], task.headers);
         if (response.statusCode < 200 || response.statusCode >= 300) {
           await response.drain<void>();
-          throw '分片 ${index + 1} 下载失败（HTTP ${response.statusCode}）';
+          throw '分片 ${i + 1} 下载失败（HTTP ${response.statusCode}）';
         }
-        final done = Completer<void>();
-        late StreamSubscription<List<int>> sub;
-        sub = response.listen(
-          (chunk) {
-            if (control.canceled || control.paused) {
-              unawaited(sub.cancel());
+        final sink = segment.openWrite();
+        try {
+          final done = Completer<void>();
+          late StreamSubscription<List<int>> sub;
+          sub = response.listen(
+            (chunk) {
+              if (control.canceled || control.paused) {
+                unawaited(sub.cancel());
+                if (!done.isCompleted) done.complete();
+                return;
+              }
+              sink.add(chunk);
+              task.receivedBytes += chunk.length;
+              _notify();
+            },
+            onDone: () {
               if (!done.isCompleted) done.complete();
-              return;
-            }
-            sink.add(chunk);
-            task.receivedBytes += chunk.length;
-            _notify();
-          },
-          onDone: () {
-            if (!done.isCompleted) done.complete();
-          },
-          onError: (Object error, StackTrace stack) {
-            if (!done.isCompleted) done.completeError(error, stack);
-          },
-          cancelOnError: true,
-        );
-        await done.future;
-        index++;
+            },
+            onError: (Object error, StackTrace stack) {
+              if (!done.isCompleted) done.completeError(error, stack);
+            },
+            cancelOnError: true,
+          );
+          await done.future;
+        } catch (_) {
+          // 半截分片不能留，否则下次会被误认为已下完。
+          try {
+            await sink.close();
+          } catch (_) {}
+          try {
+            if (await segment.exists()) await segment.delete();
+          } catch (_) {}
+          rethrow;
+        }
+        await sink.close();
+        index = i + 1;
         task.detail = '$index/${urls.length} 片';
         _notify(force: true);
       }
-    } finally {
+      if (control.canceled) throw const _CanceledException();
+      if (control.paused) return;
+      // 全部分片就绪：按顺序合并成一个文件。
+      final part = File('${task.savePath}.part');
+      if (await part.exists()) {
+        try {
+          await part.delete();
+        } catch (_) {}
+      }
+      final out = part.openWrite();
       try {
-        await sink.close();
+        for (var i = 0; i < urls.length; i++) {
+          final segment = File('${partsDir.path}${p.separator}$i.seg');
+          if (!await segment.exists()) throw '第 ${i + 1} 片缺失，无法合并';
+          await out.addStream(segment.openRead());
+        }
+      } finally {
+        await out.close();
+      }
+      try {
+        await partsDir.delete(recursive: true);
       } catch (_) {}
+    } finally {
+      // 暂停 / 失败保留分片目录，下次从断点继续；取消才清干净。
+      if (control.canceled) {
+        try {
+          await partsDir.delete(recursive: true);
+        } catch (_) {}
+      }
     }
-    if (control.canceled) throw const _CanceledException();
   }
 
   Future<String> _fetchText(String url, Map<String, String> headers) async {

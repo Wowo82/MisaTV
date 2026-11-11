@@ -881,6 +881,14 @@ class SettingsPageState extends State<SettingsPage> {
                           onTap: () => _clearStreamCache(context),
                         ),
                         _ActionRow(
+                          icon: Icons.download_for_offline_outlined,
+                          title: '下载方式',
+                          subtitle: app.playerSettings.downloader == 'idm'
+                              ? 'IDM（仅直链文件，m3u8 仍用内置）'
+                              : '内置下载（断点续传 + m3u8 合并）',
+                          onTap: () => _pickDownloader(context, app),
+                        ),
+                        _ActionRow(
                           icon: Icons.download_outlined,
                           title: '下载目录',
                           subtitle:
@@ -6671,6 +6679,71 @@ Future<void> _pickMagnetDownloadDir(BuildContext context, AppState app) async {
     app.playerSettings.copyWith(magnetDownloadDir: path.trim()),
   );
   if (context.mounted) _settingsSnack(context, '磁力下载位置已更新');
+}
+
+/// 下载方式：内置（支持 HLS / 续传）或交给 IDM（仅直链）。
+Future<void> _pickDownloader(BuildContext context, AppState app) async {
+  const options = <({String value, String name, String note})>[
+    (value: 'builtin', name: '内置下载', note: '支持 m3u8 分片合并与断点续传'),
+    (
+      value: 'idm',
+      name: 'Internet Download Manager',
+      note: '交给 IDM 下载；m3u8 任务仍用内置合并',
+    ),
+  ];
+  final current = app.playerSettings.downloader;
+  final picked = await showDialog<String>(
+    context: context,
+    builder: (ctx) {
+      final theme = Theme.of(ctx);
+      return SimpleDialog(
+        title: const Text('下载方式'),
+        children: [
+          for (final option in options)
+            SimpleDialogOption(
+              onPressed: () => Navigator.of(ctx).pop(option.value),
+              child: Row(
+                children: [
+                  Icon(
+                    option.value == current
+                        ? Icons.check_circle_rounded
+                        : Icons.circle_outlined,
+                    size: 18,
+                    color: option.value == current
+                        ? theme.colorScheme.primary
+                        : theme.disabledColor,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(option.name),
+                        Text(
+                          option.note,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: theme.colorScheme.onSurface.withValues(
+                              alpha: 0.6,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      );
+    },
+  );
+  if (picked == null || picked == current) return;
+  await app.setPlayerSettings(app.playerSettings.copyWith(downloader: picked));
+  if (!context.mounted) return;
+  _settingsSnack(
+    context,
+    picked == 'idm' ? '下载方式已改为 IDM；m3u8 任务仍用内置下载' : '下载方式已改为内置下载',
+  );
 }
 
 /// 视频下载目录：默认落在应用数据目录，可指定任意文件夹。

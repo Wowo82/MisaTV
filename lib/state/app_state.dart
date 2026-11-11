@@ -2700,6 +2700,8 @@ class AppState extends ChangeNotifier {
   Future<void> setProxy(ProxyConfig next) async {
     if (next == proxy) return;
     proxy = next;
+    // 代理池的「直连 / 节点」选中状态跟着网络代理开关走，两边保持一致。
+    proxyPool.syncFromConfig(next);
     await store.setProxyJson(next.toJsonString());
     await ProxyRuntime.instance.apply(next);
     await sourceService.jar.resetForNetworkChange();

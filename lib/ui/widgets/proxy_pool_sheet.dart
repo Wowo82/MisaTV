@@ -120,7 +120,7 @@ class _ProxyPoolSheet extends StatelessWidget {
                     shrinkWrap: true,
                     children: [
                       _DirectTile(
-                        selected: !pool.enabled,
+                        selected: !app.proxy.enabled,
                         onTap: pool.selectDirect,
                       ),
                       for (final node in pool.nodes)
@@ -207,7 +207,13 @@ class _NodeTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final pool = app.proxyPool;
-    final selected = pool.selectedId == node.id;
+    // 选中状态直接读「网络代理」的当前配置：用户在那边关掉代理后，
+    // 这里会立刻回到「直连」，两边不会各说各话。
+    final selected =
+        app.proxy.enabled &&
+        app.proxy.type == node.type &&
+        app.proxy.host == node.host &&
+        app.proxy.port == node.port;
     return ListTile(
       dense: true,
       selected: selected,

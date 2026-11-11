@@ -139,6 +139,7 @@ Future<void> _bootstrap() async {
     state.downloadService.configure(
       defaultDir: p.join(support, 'downloads'),
       customDir: () => state.playerSettings.downloadDir,
+      downloader: () => state.playerSettings.downloader,
     );
     // 恢复上次未完成的下载任务（排队中的会自动续跑）。
     state.downloadService.load();

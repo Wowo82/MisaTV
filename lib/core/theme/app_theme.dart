@@ -182,6 +182,9 @@ class AppTheme {
       ),
       snackBarTheme: SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
+        // 底部导航最高 78 + 外边距 24 = 102：留 112 保证提示条落在导航上方，
+        // 不挡住切页按钮，也不挡住下载列表底部的操作。
+        insetPadding: const EdgeInsets.fromLTRB(16, 16, 16, 112),
         backgroundColor: isDark
             ? const Color(0xFF2B3327)
             : const Color(0xFF25301F),
