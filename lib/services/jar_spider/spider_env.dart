@@ -78,7 +78,9 @@ class SpiderEnv {
     // 各通道互相隔离：某一个文件被 JVM 占用时，不能让其余通道也不写。
     await _guard(() => _syncWexFiles(spiderCacheDir, normalized));
     await _guard(() => _syncWexSeed(spiderCacheDir, normalized, extra));
-    await _guard(() => _syncPizazzFiles(tmpDir ?? Directory.systemTemp.path, normalized));
+    await _guard(
+      () => _syncPizazzFiles(tmpDir ?? Directory.systemTemp.path, normalized),
+    );
     if (dataDir != null && dataDir.trim().isNotEmpty) {
       await _guard(() => _syncCloudDrive(dataDir, normalized, ext));
     }
@@ -93,7 +95,10 @@ class SpiderEnv {
   }
 
   /// 通道 1：`<spiderCache>/files/TV/.quarkcookie`（裸 cookie，jar 里直接 trim 当 Cookie 用）。
-  static Future<void> _syncWexFiles(String spiderCacheDir, Map<String, String> cookies) async {
+  static Future<void> _syncWexFiles(
+    String spiderCacheDir,
+    Map<String, String> cookies,
+  ) async {
     final dir = Directory(p.join(spiderCacheDir, 'files', 'TV'));
     _wexFiles.forEach((provider, name) {
       final file = File(p.join(dir.path, name));
@@ -118,7 +123,8 @@ class SpiderEnv {
       for (final entry in _wexPrefKeys.entries)
         if ((cookies[entry.key] ?? '').isNotEmpty)
           '$_wexPrefsName\t${entry.value}\t${_clean(cookies[entry.key]!)}',
-      for (final entry in seed.entries) '$_wexPrefsName\t${entry.key}\t${_clean(entry.value)}',
+      for (final entry in seed.entries)
+        '$_wexPrefsName\t${entry.key}\t${_clean(entry.value)}',
       // 桌面端没有 Go 代理（ARM32 + Android root 场景），强制 Java 多线程取流；
       // 否则原画线路必报「Go多线程启动失败」。
       '$_wexPrefsName\tpan.thread_proxy_mode\tjava',
@@ -132,7 +138,10 @@ class SpiderEnv {
   }
 
   /// 通道 3：`<java.io.tmpdir>/tvbox-ext/TVBox/*.txt`（JSON 对象，键 `cookie`）。
-  static Future<void> _syncPizazzFiles(String tmpDir, Map<String, String> cookies) async {
+  static Future<void> _syncPizazzFiles(
+    String tmpDir,
+    Map<String, String> cookies,
+  ) async {
     final dir = Directory(p.join(tmpDir, 'tvbox-ext', 'TVBox'));
     for (final entry in _pizazzFiles.entries) {
       final file = File(p.join(dir.path, entry.value));
@@ -191,12 +200,21 @@ class SpiderEnv {
         // 首次/损坏 → 重建
       }
       // 凭据键必须完全由当前绑定状态决定：解绑后不能留着旧 Cookie。
-      obj.remove('quarkCookie');
-      obj.remove('ucCookie');
-      final quark = cookies['quark'] ?? '';
-      final uc = cookies['uc'] ?? '';
-      if (quark.isNotEmpty) obj['quarkCookie'] = quark;
-      if (uc.isNotEmpty) obj['ucCookie'] = uc;
+      const cookieKeys = <String, String>{
+        'quark': 'quarkCookie',
+        'uc': 'ucCookie',
+        'baidu': 'baiduCookie',
+        'mobile': 'mobileCookie',
+      };
+      for (final entry in cookieKeys.entries) {
+        obj.remove(entry.value);
+        final value = cookies[entry.key] ?? '';
+        if (value.isNotEmpty) obj[entry.value] = value;
+      }
+      // 139 系（pan139）蜘蛛认这个键名，和 mobileCookie 同时写一份。
+      obj.remove('pan139Cookie');
+      final mobile = cookies['mobile'] ?? '';
+      if (mobile.isNotEmpty) obj['pan139Cookie'] = mobile;
       try {
         file.parent.createSync(recursive: true);
         file.writeAsStringSync(jsonEncode(obj), flush: true);
@@ -214,7 +232,8 @@ class SpiderEnv {
       final decoded = jsonDecode(trimmed);
       if (decoded is! Map) return '';
       final value = '${decoded['Cloud-drive'] ?? ''}'.trim();
-      if (value.isEmpty || RegExp(r'^https?://', caseSensitive: false).hasMatch(value)) {
+      if (value.isEmpty ||
+          RegExp(r'^https?://', caseSensitive: false).hasMatch(value)) {
         return '';
       }
       return value.replaceFirst(RegExp(r'^\.{0,2}/+'), '');
@@ -224,7 +243,8 @@ class SpiderEnv {
   }
 
   /// 种子是「按行/按制表符切分」的纯文本，值里不能出现换行或制表符。
-  static String _clean(String value) => value.replaceAll(RegExp(r'[\r\n\t]'), '').trim();
+  static String _clean(String value) =>
+      value.replaceAll(RegExp(r'[\r\n\t]'), '').trim();
 
   static void _delete(File file) {
     try {
