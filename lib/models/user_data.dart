@@ -365,7 +365,7 @@ class PlayerSettings {
     this.volume = 1.0,
     this.m3u8Purify = false,
     this.bufferMinSec = 1.0,
-    this.bufferMaxSec = 4.0,
+    this.bufferMaxSec = 30.0,
     this.streamCache = false,
     this.streamCacheMb = 1024,
     this.downloadDir = '',
@@ -564,7 +564,7 @@ class PlayerSettings {
     bufferMinSec: ((j['bufferMinSec'] as num?)?.toDouble() ?? 1.0)
         .clamp(0.2, 30.0)
         .toDouble(),
-    bufferMaxSec: ((j['bufferMaxSec'] as num?)?.toDouble() ?? 4.0)
+    bufferMaxSec: ((j['bufferMaxSec'] as num?)?.toDouble() ?? 30.0)
         .clamp(1.0, 180.0)
         .toDouble(),
     streamCache: (j['streamCache'] as bool?) ?? false,

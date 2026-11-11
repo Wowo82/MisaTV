@@ -6,6 +6,8 @@ const Map<String, List<String>> driveAuthCookieNames = {
   'quark': ['__puus', '__pus', '__puuk', '__pusd'],
   'uc': ['PUVID', '__puus', '__pus', 'drive_uc'],
   'baidu': ['BDUSS'],
+  // 移动云盘（139）：a_k 是设备标识，skey / auth_token 才是登录态。
+  'mobile': ['a_k', 'skey', 'auth_token'],
 };
 
 /// Cookie 应该来自的域名，用于输入提示。
@@ -13,6 +15,7 @@ const Map<String, String> driveCookieDomains = {
   'quark': 'pan.quark.cn',
   'uc': 'drive.uc.cn',
   'baidu': 'pan.baidu.com',
+  'mobile': 'yun.139.com',
 };
 
 const Set<String> _cookieAttributes = {

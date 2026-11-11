@@ -9,10 +9,7 @@ import '../../services/drive/quark_session.dart';
 import '../../services/drive/uc_session.dart';
 
 /// 手动粘贴网盘 Cookie 的输入框；保存成功后返回 true。
-Future<bool?> showDriveCookieDialog(
-  BuildContext context,
-  String provider,
-) {
+Future<bool?> showDriveCookieDialog(BuildContext context, String provider) {
   return showDialog<bool>(
     context: context,
     builder: (_) => _DriveCookieDialog(provider: provider),
@@ -63,6 +60,14 @@ class _DriveCookieDialogState extends State<_DriveCookieDialog> {
       final result = switch (_provider) {
         'quark' => await refreshQuarkSession(cookie),
         'uc' => await refreshUcSession(cookie),
+        'baidu' => await refreshBaiduSession(cookie),
+        // 移动云盘没有公开的会话刷新接口：不联网校验，按原样保存，
+        // 免得拿它的 Cookie 去问百度接口、必然判成失效。
+        'mobile' => const QuarkSessionResult(
+          cookie: '',
+          changed: false,
+          valid: null,
+        ),
         _ => await refreshBaiduSession(cookie),
       };
       if (!mounted) return;
@@ -119,7 +124,7 @@ class _DriveCookieDialogState extends State<_DriveCookieDialog> {
                 _authFields.isEmpty
                     ? 'Cookie 等同于账号密码，只会保存在本机。'
                     : '必须包含登录态字段：$_authFields；'
-                        'Cookie 等同于账号密码，只会保存在本机。',
+                          'Cookie 等同于账号密码，只会保存在本机。',
                 style: hint,
               ),
               const SizedBox(height: 14),

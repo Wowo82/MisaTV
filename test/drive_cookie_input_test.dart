@@ -72,5 +72,15 @@ void main() {
         contains('BDUSS'),
       );
     });
+
+    test('移动云盘认 a_k / skey / auth_token', () {
+      const cookie =
+          'isUserDomainError=false; sds={"switch":0}; a_k=f0LqPvvl7QTTEPkP; '
+          'skey=jBotrXAUvmEsfoOZP1Mce; platform=2; ud_id=1039984033889534717; '
+          'auth_token=alSPCpm3|1|RCS|1796454358445';
+      expect(driveCookieHasAuth('mobile', cookie), isTrue);
+      expect(driveCookieHasAuth('mobile', 'foo=bar'), isFalse);
+      expect(driveCookieMissingHint('mobile'), contains('auth_token'));
+    });
   });
 }

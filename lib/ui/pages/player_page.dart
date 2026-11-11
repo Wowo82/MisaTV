@@ -1779,6 +1779,8 @@ class _PlayerPageState extends State<PlayerPage>
         .round()
         .clamp(minMs + 500, 180000)
         .toInt();
+    // 旧存档里可能还留着 4 秒的默认值：点播几乎看不到缓冲条，最低给到 30 秒。
+    if (maxMs < 30000) maxMs = 30000;
     // 刚起播时先放宽上限：内核会尽可能往前拉，缓冲条几秒内就能填起来，
     // 之后再回落到用户设置的上限，避免一直占着带宽。
     if (kick && maxMs < 60000) maxMs = 60000;

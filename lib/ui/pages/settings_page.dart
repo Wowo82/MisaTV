@@ -5441,8 +5441,8 @@ String _driveAccountsSubtitle(AppState app) {
           entry.value,
     ];
     return stale.isEmpty
-        ? '未登录 · 点击扫码配置夸克 / UC / 百度'
-        : '${stale.join(' / ')} 登录已失效，点击重新扫码';
+        ? '未登录 · 点击配置网盘账号'
+        : '${stale.join(' / ')} 登录已失效，点击重新登录';
   }
   final usernames = [
     for (final entry in driveProviderNames.entries)
@@ -6467,7 +6467,8 @@ class _SubtitleApiDialogState extends State<_SubtitleApiDialog> {
 /// 播放缓冲：起播预缓冲 + 最大缓冲（fvp 的 `bufferRange`）。
 Future<void> _editBufferSettings(BuildContext context, AppState app) async {
   var minSec = app.playerSettings.bufferMinSec;
-  var maxSec = app.playerSettings.bufferMaxSec;
+  // 旧存档可能是 4 秒，滑块下限已经抬到 30，先夹一下再塞给 Slider。
+  var maxSec = app.playerSettings.bufferMaxSec.clamp(30.0, 180.0);
   final saved = await showDialog<bool>(
     context: context,
     builder: (ctx) => StatefulBuilder(
@@ -6499,9 +6500,9 @@ Future<void> _editBufferSettings(BuildContext context, AppState app) async {
                 ),
                 Slider(
                   value: maxSec,
-                  min: 2,
+                  min: 30,
                   max: 180,
-                  divisions: 178,
+                  divisions: 150,
                   label: '${maxSec.toStringAsFixed(0)}s',
                   onChanged: (v) => setDialog(() => maxSec = v),
                 ),
