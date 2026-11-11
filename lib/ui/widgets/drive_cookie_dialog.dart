@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../app.dart';
 import '../../core/logging/app_log.dart';
@@ -39,6 +40,15 @@ class _DriveCookieDialogState extends State<_DriveCookieDialog> {
   void dispose() {
     _controller.dispose();
     super.dispose();
+  }
+
+  /// 一鍵從剪貼板取全文：手動複製長 Cookie 很容易只選到其中一段。
+  Future<void> _pasteFromClipboard() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text?.trim() ?? '';
+    if (text.isEmpty || !mounted) return;
+    _controller.text = text;
+    setState(() => _error = '');
   }
 
   Future<void> _save() async {
@@ -146,7 +156,16 @@ class _DriveCookieDialogState extends State<_DriveCookieDialog> {
                   errorMaxLines: 3,
                 ),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 6),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: _saving ? null : _pasteFromClipboard,
+                  icon: const Icon(Icons.content_paste_rounded, size: 16),
+                  label: const Text('从剪贴板粘贴'),
+                ),
+              ),
+              const SizedBox(height: 4),
               Row(
                 children: [
                   Icon(
@@ -157,7 +176,9 @@ class _DriveCookieDialogState extends State<_DriveCookieDialog> {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      '保存前会联网校验登录态；校验通过后 Cookie 会同步给订阅里的蜘蛛源。',
+                      _provider == 'mobile'
+                          ? '移动云盘只做本地格式校验，保存后会同步给订阅里的蜘蛛源。'
+                          : '保存前会联网校验登录态；校验通过后 Cookie 会同步给订阅里的蜘蛛源。',
                       style: theme.textTheme.labelSmall?.copyWith(
                         color: theme.colorScheme.onSurface.withValues(
                           alpha: 0.50,
