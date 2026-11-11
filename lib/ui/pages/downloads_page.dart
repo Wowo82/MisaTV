@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../../app.dart';
 import '../../services/download/download_service.dart';
+import '../../services/file_dialog_service.dart';
 import '../../services/open_folder.dart';
+import '../../state/app_state.dart';
 import '../widgets/empty_state.dart';
 
 /// 下载管理：任务列表、进度、暂停 / 继续 / 取消、打开目录。
@@ -16,6 +18,11 @@ class DownloadsPage extends StatelessWidget {
       appBar: AppBar(
         title: const Text('下载管理'),
         actions: [
+          IconButton(
+            tooltip: '下载设置',
+            onPressed: () => _showDownloadSettings(context),
+            icon: const Icon(Icons.tune_rounded),
+          ),
           IconButton(
             tooltip: '打开下载目录',
             onPressed: service.downloadDir.isEmpty
@@ -64,6 +71,104 @@ Future<void> _openFolder(BuildContext context, String path) async {
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text('打不开目录，请手动前往：$path')));
   }
+}
+
+/// 下载设置：下载方式（内置 / IDM）与下载目录，统一收在下载页里。
+Future<void> _showDownloadSettings(BuildContext context) async {
+  final app = AppScope.of(context);
+  await showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    builder: (ctx) => SafeArea(
+      child: ListenableBuilder(
+        listenable: app,
+        builder: (ctx, _) {
+          final theme = Theme.of(ctx);
+          final idm = app.playerSettings.downloader == 'idm';
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 6),
+                child: Text('下载设置', style: theme.textTheme.titleLarge),
+              ),
+              SwitchListTile(
+                value: idm,
+                onChanged: (value) => app.setPlayerSettings(
+                  app.playerSettings.copyWith(
+                    downloader: value ? 'idm' : 'builtin',
+                  ),
+                ),
+                secondary: const Icon(Icons.download_for_offline_outlined),
+                title: const Text('使用 IDM 下载'),
+                subtitle: const Text(
+                  '直链文件交给 Internet Download Manager；m3u8 仍用内置合并',
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.folder_outlined),
+                title: const Text('下载目录'),
+                subtitle: Text(
+                  app.playerSettings.downloadDir.trim().isEmpty
+                      ? '默认：应用数据目录下的 downloads'
+                      : app.playerSettings.downloadDir,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                trailing: const Icon(Icons.chevron_right_rounded),
+                onTap: () => _pickDownloadDir(ctx, app),
+              ),
+              const SizedBox(height: 10),
+            ],
+          );
+        },
+      ),
+    ),
+  );
+}
+
+Future<void> _pickDownloadDir(BuildContext context, AppState app) async {
+  final current = app.playerSettings.downloadDir.trim();
+  final action = await showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('下载目录'),
+      content: Text(
+        current.isEmpty
+            ? '当前使用默认目录：应用数据目录/downloads。\n\n'
+                  '只影响之后加入队列的任务，已开始的任务不会换目录。'
+            : '当前目录：\n$current\n\n'
+                  '只影响之后加入队列的任务，已开始的任务不会换目录。',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop('reset'),
+          child: const Text('恢复默认'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(ctx).pop('pick'),
+          child: const Text('选择文件夹'),
+        ),
+      ],
+    ),
+  );
+  if (action == 'reset') {
+    await app.setPlayerSettings(app.playerSettings.copyWith(downloadDir: ''));
+    return;
+  }
+  if (action != 'pick') return;
+  final path = await FileDialogService.pickDirectory(
+    confirmButtonText: '选择下载目录',
+  );
+  if (path == null || path.trim().isEmpty) return;
+  await app.setPlayerSettings(
+    app.playerSettings.copyWith(downloadDir: path.trim()),
+  );
 }
 
 class _DirHint extends StatelessWidget {

@@ -67,10 +67,40 @@ class _DetailPageState extends State<DetailPage> {
   List<String?> _episodeStills = const [];
   String _episodeStillsKey = '';
 
+  /// 批量下载的进度浮层；null 表示当前没有批量任务在解析。
+  final ValueNotifier<_DownloadBatchProgress?> _batchProgress =
+      ValueNotifier<_DownloadBatchProgress?>(null);
+  OverlayEntry? _batchEntry;
+  bool _batchCanceled = false;
+
   @override
   void dispose() {
+    // 页面被关掉就停掉解析循环，不要在后台接着请求源站。
+    _batchCanceled = true;
+    _batchEntry?.remove();
+    _batchEntry = null;
+    _batchProgress.dispose();
     _immersiveEpsScroll?.dispose();
     super.dispose();
+  }
+
+  void _showBatchProgress() {
+    if (_batchEntry != null) return;
+    final overlay = Overlay.maybeOf(context);
+    if (overlay == null) return;
+    _batchEntry = OverlayEntry(
+      builder: (context) => _BatchDownloadBar(
+        progress: _batchProgress,
+        onStop: () => _batchCanceled = true,
+      ),
+    );
+    overlay.insert(_batchEntry!);
+  }
+
+  void _hideBatchProgress() {
+    _batchEntry?.remove();
+    _batchEntry = null;
+    _batchProgress.value = null;
   }
 
   @override
@@ -1050,6 +1080,9 @@ class _DetailPageState extends State<DetailPage> {
   }
 
   /// 逐集解析播放地址并入队；每集都要单独过一次蜘蛛，源站慢时会等一会儿。
+  ///
+  /// 进度放在页面底部的浮层里，不用模态对话框：解析几十集可能要几分钟，
+  /// 对话框会把人锁死在详情页，想返回都不行。
   Future<void> _downloadEpisodes({
     required AppState app,
     required VodDetail detail,
@@ -1061,70 +1094,17 @@ class _DetailPageState extends State<DetailPage> {
       _toast('找不到对应站点');
       return;
     }
-    final progress = ValueNotifier<_DownloadBatchProgress>(
-      _DownloadBatchProgress(0, episodes.length, '准备中…'),
-    );
-    var canceled = false;
+    if (!mounted) return;
+    _batchCanceled = false;
+    _batchProgress.value = _DownloadBatchProgress(0, episodes.length, '准备中…');
+    _showBatchProgress();
     var ok = 0;
     var failed = 0;
-    var done = 0;
-    BuildContext? dialogContext;
-    final ready = Completer<void>();
-    final closed = showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        dialogContext = ctx;
-        if (!ready.isCompleted) ready.complete();
-        final theme = Theme.of(ctx);
-        return AlertDialog(
-          title: const Text('正在加入下载队列'),
-          content: ValueListenableBuilder<_DownloadBatchProgress>(
-            valueListenable: progress,
-            builder: (ctx, value, _) => Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                LinearProgressIndicator(
-                  value: value.total <= 0 ? null : value.done / value.total,
-                ),
-                const SizedBox(height: 14),
-                Text('${value.done} / ${value.total}'),
-                const SizedBox(height: 4),
-                Text(
-                  value.name,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodySmall,
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  '每集都要单独解析出播放地址，源站慢时请耐心等',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                canceled = true;
-                Navigator.of(ctx).pop();
-              },
-              child: const Text('停止'),
-            ),
-          ],
-        );
-      },
-    );
-    await ready.future;
     try {
       for (var i = 0; i < episodes.length; i++) {
-        if (canceled) break;
+        if (_batchCanceled || !mounted) break;
         final episode = episodes[i];
-        progress.value = _DownloadBatchProgress(
+        _batchProgress.value = _DownloadBatchProgress(
           i,
           episodes.length,
           episode.name,
@@ -1158,22 +1138,16 @@ class _DetailPageState extends State<DetailPage> {
           }
         } catch (_) {
           failed++;
-        } finally {
-          done = i + 1;
         }
       }
     } finally {
-      progress.value = _DownloadBatchProgress(done, episodes.length, '完成');
-      if (dialogContext != null && dialogContext!.mounted) {
-        Navigator.of(dialogContext!).pop();
-      }
-      await closed;
+      _hideBatchProgress();
     }
     if (!mounted) return;
     final parts = <String>[];
     if (ok > 0) parts.add('$ok 集已加入队列');
     if (failed > 0) parts.add('$failed 集解析失败');
-    if (canceled) parts.add('已停止');
+    if (_batchCanceled) parts.add('已停止');
     _toast(parts.isEmpty ? '没有可下载的剧集' : parts.join('，'));
   }
 
@@ -3662,11 +3636,84 @@ class _BtPreparingDialogState extends State<_BtPreparingDialog> {
   }
 }
 
-/// 批量下载的进度快照：交给对话框里的 `ValueListenableBuilder` 重建。
+/// 批量下载的进度快照。
 class _DownloadBatchProgress {
   const _DownloadBatchProgress(this.done, this.total, this.name);
 
   final int done;
   final int total;
   final String name;
+}
+
+/// 批量解析进度浮层：贴在页面底部，不拦截其它区域的点击，随时能停。
+class _BatchDownloadBar extends StatelessWidget {
+  const _BatchDownloadBar({required this.progress, required this.onStop});
+
+  final ValueListenable<_DownloadBatchProgress?> progress;
+  final VoidCallback onStop;
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<_DownloadBatchProgress?>(
+      valueListenable: progress,
+      builder: (context, value, _) {
+        if (value == null) return const SizedBox.shrink();
+        final theme = Theme.of(context);
+        return Positioned(
+          left: 20,
+          right: 20,
+          bottom: 20,
+          child: SafeArea(
+            top: false,
+            child: Material(
+              elevation: 10,
+              borderRadius: BorderRadius.circular(14),
+              color: theme.colorScheme.surfaceContainerHigh,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 8, 10),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '正在加入下载队列 ${value.done}/${value.total}',
+                            style: theme.textTheme.labelLarge,
+                          ),
+                        ),
+                        TextButton(onPressed: onStop, child: const Text('停止')),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(3),
+                      child: LinearProgressIndicator(
+                        value: value.total <= 0
+                            ? null
+                            : value.done / value.total,
+                        minHeight: 4,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      value.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurface.withValues(
+                          alpha: 0.65,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
 }

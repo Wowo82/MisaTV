@@ -285,7 +285,7 @@ class DownloadService extends ChangeNotifier {
       } else if (_downloader() == 'idm' && await _sendToIdm(task)) {
         // 交给 IDM 后本进程不再接管：标成已完成，进度由 IDM 自己显示。
         task.status = DownloadStatus.done;
-        task.detail = '已交给 IDM';
+        task.detail = '已推送到 IDM，进度见 IDM';
         task.receivedBytes = 0;
         task.totalBytes = 0;
         return;
@@ -326,15 +326,24 @@ class DownloadService extends ChangeNotifier {
     }
   }
 
-  /// 把直链交给 IDM：`/d 地址 /p 目录 /f 文件名 /a`（加入队列并开始）。
+  /// 把直链推给 IDM：`/d 地址 /p 目录 /f 文件名 /a`（加入队列并开始）。
   ///
   /// 只对非 HLS 调用 —— IDM 不认 m3u8，丢给它只会存下一个清单文件。
+  /// IDM 没运行时直接带参数启动 `IDMan.exe` 会被它忽略（只拉起主程序），
+  /// 所以要先确认进程存在，再把任务发过去。
   Future<bool> _sendToIdm(DownloadTask task) async {
     final exe = _findIdm();
-    if (exe == null) return false;
+    if (exe == null) {
+      AppLog.w('download', '未找到 IDM，回退内置下载');
+      return false;
+    }
     try {
       final dir = p.dirname(task.savePath);
       await Directory(dir).create(recursive: true);
+      if (!await _idmRunning()) {
+        await Process.start(exe, const [], mode: ProcessStartMode.detached);
+        await Future<void>.delayed(const Duration(milliseconds: 2000));
+      }
       await Process.start(exe, [
         '/d',
         task.url,
@@ -344,9 +353,23 @@ class DownloadService extends ChangeNotifier {
         p.basename(task.savePath),
         '/a',
       ], mode: ProcessStartMode.detached);
+      AppLog.i('download', '已推送到 IDM：${p.basename(task.savePath)}');
       return true;
     } catch (error) {
       AppLog.w('download', '调用 IDM 失败：$error');
+      return false;
+    }
+  }
+
+  Future<bool> _idmRunning() async {
+    try {
+      final result = await Process.run('tasklist', [
+        '/FI',
+        'IMAGENAME eq IDMan.exe',
+        '/NH',
+      ], stdoutEncoding: const SystemEncoding());
+      return result.stdout.toString().contains('IDMan.exe');
+    } catch (_) {
       return false;
     }
   }
