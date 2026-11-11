@@ -217,6 +217,9 @@ class _PlayerPageState extends State<PlayerPage>
   Timer? _hideTimer;
   Timer? _saveTimer;
 
+  /// 起播后恢复缓冲上限的定时器（开局用更大的上限加速填充）。
+  Timer? _bufferRestoreTimer;
+
   /// 播放器「详情」悬浮层开关与每秒刷新时钟 / 网速的计时器。
   bool _detailsVisible = false;
   Timer? _detailsTimer;
@@ -605,7 +608,9 @@ class _PlayerPageState extends State<PlayerPage>
       // 25 秒没有初始化完成就放弃，后面会尝试绕过中继直连。
       await controller.initialize().timeout(const Duration(seconds: 25));
       // 缓冲参数要在起播前设好：fvp 的 bufferRange 只影响后续拉流。
-      _applyBufferRange(controller);
+      // kick 让开局几秒用更大的上限，缓冲涨得快；8 秒后恢复用户设置。
+      _applyBufferRange(controller, kick: true);
+      _scheduleBufferRestore(controller);
       final live = _detectLive(controller);
       _live = live;
       await controller.setPlaybackSpeed(_rate);
@@ -1355,6 +1360,7 @@ class _PlayerPageState extends State<PlayerPage>
     }
     _hideTimer?.cancel();
     _saveTimer?.cancel();
+    _bufferRestoreTimer?.cancel();
     _detailsTimer?.cancel();
     _cancelPendingSkipPick();
     final autoSearchDone = _autoSearchDone;
@@ -1759,22 +1765,37 @@ class _PlayerPageState extends State<PlayerPage>
   ///
   /// video_player 没有等价参数，非 fvp 内核时直接跳过。换集时调用一次；
   /// 设置变更由 didChangeDependencies 触发重新下发，当前集立即生效。
-  void _applyBufferRange(VideoPlayerController controller) {
+  void _applyBufferRange(
+    VideoPlayerController controller, {
+    bool kick = false,
+  }) {
     if (!_mdkEnabled) return;
     final settings = _app.playerSettings;
     final minMs = (settings.bufferMinSec * 1000)
         .round()
         .clamp(200, 30000)
         .toInt();
-    final maxMs = (settings.bufferMaxSec * 1000)
+    var maxMs = (settings.bufferMaxSec * 1000)
         .round()
         .clamp(minMs + 500, 180000)
         .toInt();
+    // 刚起播时先放宽上限：内核会尽可能往前拉，缓冲条几秒内就能填起来，
+    // 之后再回落到用户设置的上限，避免一直占着带宽。
+    if (kick && maxMs < 60000) maxMs = 60000;
     try {
       controller.setBufferRange(min: minMs, max: maxMs);
     } catch (_) {
       // 内核未接管时扩展会抛 StateError，退化为内核默认缓冲
     }
+  }
+
+  /// 起播 8 秒后把缓冲上限恢复到用户设置（`kick` 只在开局生效）。
+  void _scheduleBufferRestore(VideoPlayerController controller) {
+    _bufferRestoreTimer?.cancel();
+    _bufferRestoreTimer = Timer(const Duration(seconds: 8), () {
+      if (!mounted || controller != _controller) return;
+      _applyBufferRange(controller);
+    });
   }
 
   /// 读 fvp 的 MediaInfo：分辨率、帧率、编码、容器与实时码率（当作网速）。

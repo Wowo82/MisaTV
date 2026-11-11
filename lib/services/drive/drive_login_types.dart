@@ -3,4 +3,5 @@ const driveProviderNames = <String, String>{
   'quark': '夸克网盘',
   'uc': 'UC 网盘',
   'baidu': '百度网盘',
+  'mobile': '移动云盘',
 };

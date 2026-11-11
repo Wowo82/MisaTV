@@ -369,7 +369,6 @@ class PlayerSettings {
     this.streamCache = false,
     this.streamCacheMb = 1024,
     this.downloadDir = '',
-    this.downloader = 'builtin',
     this.fit = 'contain',
     this.jsWorkerPool = false,
     this.keepSpiderHosts = false,
@@ -432,7 +431,6 @@ class PlayerSettings {
     bool? streamCache,
     int? streamCacheMb,
     String? downloadDir,
-    String? downloader,
     String? fit,
     bool? jsWorkerPool,
     bool? keepSpiderHosts,
@@ -459,7 +457,6 @@ class PlayerSettings {
     streamCache: streamCache ?? this.streamCache,
     streamCacheMb: streamCacheMb ?? this.streamCacheMb,
     downloadDir: downloadDir ?? this.downloadDir,
-    downloader: downloader ?? this.downloader,
     fit: fit ?? this.fit,
     jsWorkerPool: jsWorkerPool ?? this.jsWorkerPool,
     keepSpiderHosts: keepSpiderHosts ?? this.keepSpiderHosts,
@@ -490,10 +487,6 @@ class PlayerSettings {
 
   /// 视频下载目录；空串 = 应用数据目录下的 `downloads`。
   final String downloadDir;
-
-  /// 下载方式：`builtin` 内置；`idm` 交给 Internet Download Manager。
-  /// IDM 不认 HLS，m3u8 任务仍然走内置的分片合并。
-  final String downloader;
 
   /// JS 蜘蛛并行（实验，默认关）：开启后最多 3 只 QuickJS 执行器，
   /// 多 JS 源搜索/浏览不用再排同一个 isolate 的队。
@@ -533,7 +526,6 @@ class PlayerSettings {
     'streamCache': streamCache,
     'streamCacheMb': streamCacheMb,
     'downloadDir': downloadDir,
-    'downloader': downloader,
     'fit': fit,
     'jsWorkerPool': jsWorkerPool,
     'keepSpiderHosts': keepSpiderHosts,
@@ -580,7 +572,6 @@ class PlayerSettings {
         .clamp(128, 16384)
         .toInt(),
     downloadDir: (j['downloadDir'] ?? '').toString().trim(),
-    downloader: (j['downloader'] ?? '').toString() == 'idm' ? 'idm' : 'builtin',
     fit: normalizePlayerFit((j['fit'] ?? '').toString()).name,
     jsWorkerPool: (j['jsWorkerPool'] as bool?) ?? false,
     keepSpiderHosts: (j['keepSpiderHosts'] as bool?) ?? false,

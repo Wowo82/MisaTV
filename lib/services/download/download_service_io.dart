@@ -25,9 +25,6 @@ class DownloadService extends ChangeNotifier {
   HttpClient? _client;
   String _defaultDir = '';
   String Function() _customDir = () => '';
-
-  /// 下载方式：`builtin` 内置，`idm` 交给 Internet Download Manager。
-  String Function() _downloader = () => 'builtin';
   bool _pumping = false;
   DateTime _lastNotify = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -38,14 +35,9 @@ class DownloadService extends ChangeNotifier {
 
   /// 注入目录：`defaultDir` 是应用数据目录下的 downloads，
   /// `customDir` 由设置页的「下载目录」实时提供，非空时优先。
-  void configure({
-    required String defaultDir,
-    String Function()? customDir,
-    String Function()? downloader,
-  }) {
+  void configure({required String defaultDir, String Function()? customDir}) {
     _defaultDir = defaultDir;
     _customDir = customDir ?? () => '';
-    _downloader = downloader ?? () => 'builtin';
   }
 
   /// 从存档恢复任务。
@@ -282,13 +274,6 @@ class DownloadService extends ChangeNotifier {
       await Directory(p.dirname(task.savePath)).create(recursive: true);
       if (hls) {
         await _runHls(task, control);
-      } else if (_downloader() == 'idm' && await _sendToIdm(task)) {
-        // 交给 IDM 后本进程不再接管：标成已完成，进度由 IDM 自己显示。
-        task.status = DownloadStatus.done;
-        task.detail = '已推送到 IDM，进度见 IDM';
-        task.receivedBytes = 0;
-        task.totalBytes = 0;
-        return;
       } else {
         await _runFile(task, control);
       }
@@ -304,7 +289,14 @@ class DownloadService extends ChangeNotifier {
         task.status = DownloadStatus.done;
         task.detail = '';
         task.speedBps = 0;
-        if (task.totalBytes > 0) task.receivedBytes = task.totalBytes;
+        // 以磁盘上的最终文件为准：HLS 分片是边下边合并，只有这时才知道总大小。
+        try {
+          final size = await File(task.savePath).length();
+          if (size > 0) {
+            task.receivedBytes = size;
+            task.totalBytes = size;
+          }
+        } catch (_) {}
         AppLog.i('download', '下载完成 ${p.basename(task.savePath)}');
       }
     } catch (error) {
@@ -324,65 +316,6 @@ class DownloadService extends ChangeNotifier {
       if (!task.busy) _controls.remove(task.id);
       _notify(force: true);
     }
-  }
-
-  /// 把直链推给 IDM：`/d 地址 /p 目录 /f 文件名 /a`（加入队列并开始）。
-  ///
-  /// 只对非 HLS 调用 —— IDM 不认 m3u8，丢给它只会存下一个清单文件。
-  /// IDM 没运行时直接带参数启动 `IDMan.exe` 会被它忽略（只拉起主程序），
-  /// 所以要先确认进程存在，再把任务发过去。
-  Future<bool> _sendToIdm(DownloadTask task) async {
-    final exe = _findIdm();
-    if (exe == null) {
-      AppLog.w('download', '未找到 IDM，回退内置下载');
-      return false;
-    }
-    try {
-      final dir = p.dirname(task.savePath);
-      await Directory(dir).create(recursive: true);
-      if (!await _idmRunning()) {
-        await Process.start(exe, const [], mode: ProcessStartMode.detached);
-        await Future<void>.delayed(const Duration(milliseconds: 2000));
-      }
-      await Process.start(exe, [
-        '/d',
-        task.url,
-        '/p',
-        dir,
-        '/f',
-        p.basename(task.savePath),
-        '/a',
-      ], mode: ProcessStartMode.detached);
-      AppLog.i('download', '已推送到 IDM：${p.basename(task.savePath)}');
-      return true;
-    } catch (error) {
-      AppLog.w('download', '调用 IDM 失败：$error');
-      return false;
-    }
-  }
-
-  Future<bool> _idmRunning() async {
-    try {
-      final result = await Process.run('tasklist', [
-        '/FI',
-        'IMAGENAME eq IDMan.exe',
-        '/NH',
-      ], stdoutEncoding: const SystemEncoding());
-      return result.stdout.toString().contains('IDMan.exe');
-    } catch (_) {
-      return false;
-    }
-  }
-
-  String? _findIdm() {
-    const candidates = [
-      r'C:\Program Files (x86)\Internet Download Manager\IDMan.exe',
-      r'C:\Program Files\Internet Download Manager\IDMan.exe',
-    ];
-    for (final path in candidates) {
-      if (File(path).existsSync()) return path;
-    }
-    return null;
   }
 
   /// 探测地址是不是 HLS 清单。

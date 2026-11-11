@@ -41,7 +41,7 @@ class DownloadsPage extends StatelessWidget {
               icon: Icons.download_rounded,
               title: '还没有下载任务',
               message:
-                  '在播放页点控制栏的「下载」把当前集存到本地：'
+                  '在影片详情页点右上角的下载按钮，选中剧集即可加入队列：'
                   '直链 MP4 支持断点续传，m3u8 会按清单顺序合并成一个 .ts 文件。',
             );
           }
@@ -73,7 +73,7 @@ Future<void> _openFolder(BuildContext context, String path) async {
   }
 }
 
-/// 下载设置：下载方式（内置 / IDM）与下载目录，统一收在下载页里。
+/// 下载设置：目前只有下载目录。
 Future<void> _showDownloadSettings(BuildContext context) async {
   final app = AppScope.of(context);
   await showModalBottomSheet<void>(
@@ -84,7 +84,6 @@ Future<void> _showDownloadSettings(BuildContext context) async {
         listenable: app,
         builder: (ctx, _) {
           final theme = Theme.of(ctx);
-          final idm = app.playerSettings.downloader == 'idm';
           return Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -92,19 +91,6 @@ Future<void> _showDownloadSettings(BuildContext context) async {
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 0, 20, 6),
                 child: Text('下载设置', style: theme.textTheme.titleLarge),
-              ),
-              SwitchListTile(
-                value: idm,
-                onChanged: (value) => app.setPlayerSettings(
-                  app.playerSettings.copyWith(
-                    downloader: value ? 'idm' : 'builtin',
-                  ),
-                ),
-                secondary: const Icon(Icons.download_for_offline_outlined),
-                title: const Text('使用 IDM 下载'),
-                subtitle: const Text(
-                  '直链文件交给 Internet Download Manager；m3u8 仍用内置合并',
-                ),
               ),
               ListTile(
                 leading: const Icon(Icons.folder_outlined),

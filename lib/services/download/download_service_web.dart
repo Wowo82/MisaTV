@@ -11,11 +11,7 @@ class DownloadService extends ChangeNotifier {
   /// 浏览器没有任务存档，恢复是空操作。
   void load() {}
 
-  void configure({
-    required String defaultDir,
-    String Function()? customDir,
-    String Function()? downloader,
-  }) {}
+  void configure({required String defaultDir, String Function()? customDir}) {}
 
   String get downloadDir => '';
 

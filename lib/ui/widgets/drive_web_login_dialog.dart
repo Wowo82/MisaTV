@@ -134,6 +134,17 @@ const _webLoginConfigs = <String, _WebLoginConfig>{
       '.app-download',
     ],
   ),
+  // 中国移动云盘（139）：网页版登录后靠 OSPSID / RMKEY 维持会话。
+  'mobile': _WebLoginConfig(
+    provider: 'mobile',
+    name: '移动云盘',
+    loginUrl: 'https://yun.139.com/',
+    scope: 'https://yun.139.com',
+    cookieScopes: ['https://www.139.com'],
+    authCookies: ['OSPSID', 'RMKEY', 'SSOID'],
+    hint: '在下方官方网页登录（账号密码 / 验证码 / 扫码），成功后自动读取 Cookie',
+    width: 720,
+  ),
 };
 
 const _desktopUserAgent =
@@ -555,7 +566,9 @@ class _DriveWebLoginDialogState extends State<_DriveWebLoginDialog> {
                           _controller = controller,
                       // Windows 插件 0.6.0 的权限回调不判空，Dart 返回 null 会闪退。
                       onPermissionRequest: (controller, request) async =>
-                          PermissionResponse(action: PermissionResponseAction.DENY),
+                          PermissionResponse(
+                            action: PermissionResponseAction.DENY,
+                          ),
                       onLoadStart: (controller, url) {
                         _setStatus('正在加载网页…');
                       },

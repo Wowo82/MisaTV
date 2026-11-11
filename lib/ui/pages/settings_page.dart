@@ -509,6 +509,34 @@ class SettingsPageState extends State<SettingsPage> {
                           subtitle: '${app.davService.servers.length} 个服务器',
                           onTap: () => _openDavServers(context),
                         ),
+                        Divider(
+                          height: 1,
+                          thickness: 1,
+                          color: theme.colorScheme.outlineVariant.withValues(
+                            alpha: 0.35,
+                          ),
+                        ),
+                        _ActionRow(
+                          icon: Icons.cloud_download_outlined,
+                          title: '迅雷云盘',
+                          subtitle: app.xunleiAccount.loggedIn
+                              ? '${app.xunleiAccount.displayName} · '
+                                    '磁力优先走云端离线下载'
+                              : '未登录；支持账号密码（含短信验证）或刷新令牌',
+                          onTap: () => _editXunlei(context, app),
+                        ),
+                        SwitchListTile.adaptive(
+                          value: app.xunleiAccount.enabled,
+                          onChanged: app.xunleiAccount.loggedIn
+                              ? (v) => app.setXunleiEnabled(v)
+                              : null,
+                          title: const Text('磁力优先使用迅雷云盘'),
+                          subtitle: const Text(
+                            '先提交到迅雷云盘离线下载，云端完成后播放；'
+                            '未登录、关闭或失败时自动回退 aria2',
+                          ),
+                          contentPadding: EdgeInsets.zero,
+                        ),
                       ],
                     ),
                   ),
@@ -878,30 +906,6 @@ class SettingsPageState extends State<SettingsPage> {
                           title: '清空播放缓存',
                           subtitle: '只清理边播缓存目录，不影响收藏 / 历史 / 订阅',
                           onTap: () => _clearStreamCache(context),
-                        ),
-                        // 下载方式 / 下载目录 / 下载管理 统一放在「下载」tab 里，
-                        // 播放设置只保留播放相关的项目。
-
-                        _ActionRow(
-                          icon: Icons.cloud_download_outlined,
-                          title: '迅雷云盘',
-                          subtitle: app.xunleiAccount.loggedIn
-                              ? '${app.xunleiAccount.displayName} · '
-                                    '磁力优先走云端离线下载'
-                              : '未登录；支持账号密码（含短信验证）或刷新令牌',
-                          onTap: () => _editXunlei(context, app),
-                        ),
-                        SwitchListTile.adaptive(
-                          value: app.xunleiAccount.enabled,
-                          onChanged: app.xunleiAccount.loggedIn
-                              ? (v) => app.setXunleiEnabled(v)
-                              : null,
-                          title: const Text('磁力优先使用迅雷云盘'),
-                          subtitle: const Text(
-                            '先提交到迅雷云盘离线下载，云端完成后播放；'
-                            '未登录、关闭或失败时自动回退 aria2',
-                          ),
-                          contentPadding: EdgeInsets.zero,
                         ),
                         _ActionRow(
                           icon: Icons.folder_open_rounded,
@@ -2305,8 +2309,6 @@ class _PlaySummary extends StatelessWidget {
         Text('自动换线${settings.autoSwitchLine ? '开启' : '关闭'}', style: hint),
         Text('进度记忆${settings.rememberProgress ? '开启' : '关闭'}', style: hint),
         Text('去广告${settings.m3u8Purify ? '开启' : '关闭'}', style: hint),
-        // 下载设置藏在展开后的列表里，折叠时也给个提示，免得找不到。
-        Text('下载${settings.downloader == 'idm' ? 'IDM' : '内置'}', style: hint),
         Text('点击展开', style: hint),
       ],
     );
@@ -3478,6 +3480,7 @@ class _DriveAccountRow extends StatelessWidget {
     'quark' => Icons.cloud_circle_outlined,
     'uc' => Icons.cloud_queue_rounded,
     'baidu' => Icons.cloud_done_outlined,
+    'mobile' => Icons.sim_card_outlined,
     _ => Icons.cloud_outlined,
   };
 

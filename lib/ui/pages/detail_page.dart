@@ -15,6 +15,7 @@ import '../../services/artwork/artwork_service.dart';
 import '../../services/discover/cover_images.dart';
 import '../../services/discover/discover_models.dart';
 import '../../services/download/download_service.dart';
+import '../../services/download/download_task.dart';
 import '../../services/drive/drive_line_hint.dart';
 import '../../services/jar_spider/hyms_native.dart';
 import '../../services/mpv_extension.dart';
@@ -963,6 +964,13 @@ class _DetailPageState extends State<DetailPage> {
       return;
     }
     final selected = <int>{};
+    // 已经下完的集在弹层里直接标出体积，方便判断哪些不用再选。
+    final doneTasks = <String, DownloadTask>{};
+    for (final task in app.downloadService.tasks) {
+      if (task.title == detail.name && task.status == DownloadStatus.done) {
+        doneTasks[task.episode] = task;
+      }
+    }
     final confirmed = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
@@ -1037,6 +1045,12 @@ class _DetailPageState extends State<DetailPage> {
                               }
                             }),
                             title: Text(episodes[index].name),
+                            subtitle: doneTasks[episodes[index].name] == null
+                                ? null
+                                : Text(
+                                    '已下载 '
+                                    '${formatBytes(doneTasks[episodes[index].name]!.totalBytes)}',
+                                  ),
                           );
                         },
                       ),
