@@ -2333,6 +2333,8 @@ class _PlaySummary extends StatelessWidget {
         Text('自动换线${settings.autoSwitchLine ? '开启' : '关闭'}', style: hint),
         Text('进度记忆${settings.rememberProgress ? '开启' : '关闭'}', style: hint),
         Text('去广告${settings.m3u8Purify ? '开启' : '关闭'}', style: hint),
+        // 下载设置藏在展开后的列表里，折叠时也给个提示，免得找不到。
+        Text('下载${settings.downloader == 'idm' ? 'IDM' : '内置'}', style: hint),
         Text('点击展开', style: hint),
       ],
     );

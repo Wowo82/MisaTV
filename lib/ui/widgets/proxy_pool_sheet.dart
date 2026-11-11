@@ -28,7 +28,8 @@ class _ProxyPoolSheet extends StatelessWidget {
           maxHeight: MediaQuery.sizeOf(context).height * 0.86,
         ),
         child: ListenableBuilder(
-          listenable: pool,
+          // 同时监听网络代理状态：在「网络代理」里开关后，这里要立刻跟随。
+          listenable: Listenable.merge([pool, app]),
           builder: (context, _) {
             final theme = Theme.of(context);
             return Column(
@@ -51,6 +52,19 @@ class _ProxyPoolSheet extends StatelessWidget {
                                 ),
                               ),
                             ),
+                            // 网络代理里手填的地址不在池内：说清楚，免得以为没选中。
+                            if (app.proxy.enabled && pool.selectedId.isEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Text(
+                                  '当前为自定义代理：${app.proxy.summary}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.textTheme.labelSmall?.copyWith(
+                                    color: theme.colorScheme.primary,
+                                  ),
+                                ),
+                              ),
                           ],
                         ),
                       ),
