@@ -142,6 +142,21 @@ class SpiderEnv {
   }
 
   /// 通道 2：SharedPreferences 种子（内置 prefs-shim 读 `<base>/shared_prefs/seed.txt`）。
+  /// 从移动云盘 Cookie 里取账号标识（`ORCHES-I-ACCOUNT-SIMPLIFY=185****1390`）。
+  static String _mobileUserOf(String cookie) {
+    for (final part in cookie.split(';')) {
+      final segment = part.trim();
+      final eq = segment.indexOf('=');
+      if (eq <= 0) continue;
+      final name = segment.substring(0, eq).trim().toLowerCase();
+      if (name == 'orches-i-account-simplify' ||
+          name == 'orches-i-account-encrypt') {
+        return segment.substring(eq + 1).trim();
+      }
+    }
+    return '';
+  }
+
   static Future<void> _syncWexSeed(
     String spiderCacheDir,
     Map<String, String> cookies,
@@ -155,6 +170,9 @@ class SpiderEnv {
       for (final key in _wexMobileKeys)
         if ((cookies['mobile'] ?? '').isNotEmpty)
           '$_wexPrefsName\t$key\t${_clean(cookies['mobile']!)}',
+      // 139 系除了 cookie 还要配套的用户名键，缺了会被判成未登录。
+      if (_mobileUserOf(cookies['mobile'] ?? '').isNotEmpty)
+        '$_wexPrefsName\tWex_139_user\t${_mobileUserOf(cookies['mobile']!)}',
       for (final entry in seed.entries)
         '$_wexPrefsName\t${entry.key}\t${_clean(entry.value)}',
       // 桌面端没有 Go 代理（ARM32 + Android root 场景），强制 Java 多线程取流；
