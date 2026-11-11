@@ -2753,6 +2753,8 @@ class AppState extends ChangeNotifier {
                   !((e.key == 'quark' || e.key == 'uc' || e.key == 'baidu') &&
                       e.value.extra['guest'] == 'true'),
             )
+            // 移动云盘已不再支持：旧存档里的 mobile 账号不再注入蜘蛛。
+            .where((e) => e.key != 'mobile')
             .map((e) => MapEntry(e.key, e.value.cookie.trim())),
       );
   }

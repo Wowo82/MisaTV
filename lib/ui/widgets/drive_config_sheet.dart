@@ -72,7 +72,7 @@ class DriveConfigPanel extends StatefulWidget {
 }
 
 class _DriveConfigPanelState extends State<DriveConfigPanel> {
-  static const _providers = ['quark', 'uc', 'baidu', 'mobile'];
+  static const _providers = ['quark', 'uc', 'baidu'];
 
   String get _actionText {
     final item = widget.item;

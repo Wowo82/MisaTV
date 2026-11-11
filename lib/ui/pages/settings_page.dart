@@ -3480,7 +3480,6 @@ class _DriveAccountRow extends StatelessWidget {
     'quark' => Icons.cloud_circle_outlined,
     'uc' => Icons.cloud_queue_rounded,
     'baidu' => Icons.cloud_done_outlined,
-    'mobile' => Icons.sim_card_outlined,
     _ => Icons.cloud_outlined,
   };
 

@@ -70,14 +70,6 @@ class _DriveCookieDialogState extends State<_DriveCookieDialog> {
       final result = switch (_provider) {
         'quark' => await refreshQuarkSession(cookie),
         'uc' => await refreshUcSession(cookie),
-        'baidu' => await refreshBaiduSession(cookie),
-        // 移动云盘没有公开的会话刷新接口：不联网校验，按原样保存，
-        // 免得拿它的 Cookie 去问百度接口、必然判成失效。
-        'mobile' => const QuarkSessionResult(
-          cookie: '',
-          changed: false,
-          valid: null,
-        ),
         _ => await refreshBaiduSession(cookie),
       };
       if (!mounted) return;
@@ -176,9 +168,7 @@ class _DriveCookieDialogState extends State<_DriveCookieDialog> {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      _provider == 'mobile'
-                          ? '移动云盘只做本地格式校验，保存后会同步给订阅里的蜘蛛源。'
-                          : '保存前会联网校验登录态；校验通过后 Cookie 会同步给订阅里的蜘蛛源。',
+                      '保存前会联网校验登录态；校验通过后 Cookie 会同步给订阅里的蜘蛛源。',
                       style: theme.textTheme.labelSmall?.copyWith(
                         color: theme.colorScheme.onSurface.withValues(
                           alpha: 0.50,

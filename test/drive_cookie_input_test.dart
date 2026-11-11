@@ -62,27 +62,17 @@ void main() {
       expect(driveCookieMissingHint('baidu'), contains('BDUSS'));
     });
 
-    test('移动云盘认 a_k / skey / auth_token', () {
-      const cookie =
-          'isUserDomainError=false; sds={"switch":0}; a_k=f0LqPvvl7QTTEPkP; '
-          'skey=jBotrXAUvmEsfoOZP1Mce; platform=2; ud_id=1039984033889534717; '
-          'auth_token=alSPCpm3|1|RCS|1796454358445';
-      expect(driveCookieHasAuth('mobile', cookie), isTrue);
-      expect(driveCookieHasAuth('mobile', 'foo=bar'), isFalse);
-      expect(driveCookieMissingHint('mobile'), contains('auth_token'));
-    });
-
     test('兼容 DevTools 导出的 JSON 数组', () {
       const raw =
-          '[{"name":"a_k","value":"abc123"},'
-          '{"name":"auth_token","value":"xyz789"},'
+          '[{"name":"__puus","value":"abc123"},'
+          '{"name":"__pus","value":"xyz789"},'
           '{"name":"path","value":"/"}]';
       final cookie = normalizeDriveCookieInput(raw);
-      expect(cookie, contains('a_k=abc123'));
-      expect(cookie, contains('auth_token=xyz789'));
+      expect(cookie, contains('__puus=abc123'));
+      expect(cookie, contains('__pus=xyz789'));
       // path 属于 Cookie 属性，不该混进请求头。
       expect(cookie, isNot(contains('path=')));
-      expect(driveCookieHasAuth('mobile', cookie), isTrue);
+      expect(driveCookieHasAuth('quark', cookie), isTrue);
     });
   });
 }

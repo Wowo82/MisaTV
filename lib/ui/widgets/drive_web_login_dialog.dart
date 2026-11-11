@@ -134,17 +134,6 @@ const _webLoginConfigs = <String, _WebLoginConfig>{
       '.app-download',
     ],
   ),
-  // 中国移动云盘（139）：a_k + skey / auth_token 才是登录态。
-  'mobile': _WebLoginConfig(
-    provider: 'mobile',
-    name: '移动云盘',
-    loginUrl: 'https://yun.139.com/',
-    scope: 'https://yun.139.com',
-    cookieScopes: ['https://www.139.com'],
-    authCookies: ['a_k', 'skey', 'auth_token'],
-    hint: '在下方官方网页登录（账号密码 / 验证码 / 扫码），成功后自动读取 Cookie',
-    width: 720,
-  ),
 };
 
 const _desktopUserAgent =
