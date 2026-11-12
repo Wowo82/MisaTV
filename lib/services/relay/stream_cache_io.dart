@@ -1,6 +1,7 @@
+import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 
@@ -9,11 +10,11 @@ import 'package:crypto/crypto.dart';
 /// 「边播边缓存」把播放器已经下行的分片顺手写到本地：重新拖回看过的位置、
 /// 或者第二天重看同一集时，直接读盘不再回源。
 ///
-/// 三条约束保证它不会把内存吃掉：
-///   · **写入带背压**：落盘走 `RandomAccessFile.writeFrom` 逐块 await，磁盘慢时
-///     上游会被暂停，内存占用恒定在一块 chunk，不随分片大小增长；
-///   · **并发有上限**：同时落盘的分片最多 [maxConcurrentWriters] 个，其余请求
-///     只转发不缓存，HLS 一次拉七八个分片也不会叠出七八份整段缓冲；
+/// 仿夸克的做法：**播放优先，缓存尽力而为**。三条约束保证它不会把内存吃掉：
+///   · **写入不挡转发**：落盘走旁路队列，[StreamCacheWriter.enqueue] 只入队，
+///     转发链路从不等磁盘 —— 播放器永远按网络速度走；
+///   · **队列有硬上限**：每个分片最多在内存里排 512KB，磁盘吞吐低于网络就
+///     整条放弃缓存，内存不会随播放时长或磁盘状态失控；
 ///   · **只缓存整段 GET 的小文件**（HLS 分片、封面图之类）：带 Range 的请求、
 ///     m3u8 清单、gzip 响应、以及超过 [maxEntryBytes] 的响应都不进缓存。
 class StreamDiskCache {
@@ -296,11 +297,12 @@ class StreamCacheEntry {
   final int length;
 }
 
-/// 写入器：一边转发给播放器，一边把同样的字节写进 `<key>.tmp`，
+/// 写入器：把转发给播放器的字节顺手写进 `<key>.tmp`，
 /// 流正常结束后 rename 成正式条目并记录 content-type。
 ///
-/// 关键是 [write] **真的会等磁盘**：调用方必须 `await` 它，
-/// 这样磁盘跟不上时会反压到上游，内存里永远只压着一块 chunk。
+/// 仿夸克的关键点：**转发路径不等磁盘**。
+/// 数据以文件为唯一载体，内存里只排着还没落盘的那几块 —— 队列满了就整个
+/// 分片放弃缓存，播放继续。这样磁盘再慢，内存也有确定的上界。
 class StreamCacheWriter {
   StreamCacheWriter._({
     required this.cache,
@@ -320,42 +322,88 @@ class StreamCacheWriter {
   final String contentType;
   final int expectedLength;
 
-  /// 攒到 128KB 再落一次盘：8KB 一块直接 writeFrom 会产生上千次跨 isolate
-  /// 往返，攒批后 syscall 数量降一个量级，而缓冲本身仍然很小。
-  static const int _flushAt = 128 * 1024;
+  /// 每个写入器在内存里最多排 512KB。
+  ///
+  /// 磁盘吞吐低于网络（机械盘、杀软实时扫描、SMB 挂载）时，多出来的分片
+  /// 直接放弃缓存 —— 播放照常，内存也不会跟着磁盘状态失控。
+  /// 想更激进地省内存可以调到 128KB，代价是慢盘上更容易放弃。
+  static const int maxQueuedBytes = 512 * 1024;
 
-  final BytesBuilder _pending = BytesBuilder(copy: false);
+  final Queue<List<int>> _queue = Queue<List<int>>();
+  int _queued = 0;
   int _written = 0;
   bool _done = false;
+  bool _dropped = false;
+  bool _pumping = false;
   bool _released = false;
+  Completer<void>? _idle;
 
-  /// 追加一块字节。返回时数据已经交给操作系统（或已放弃缓存）。
+  /// 入队一块字节，**立即返回**。
   ///
-  /// 缓存失败不影响播放：磁盘满 / 文件被占用时只是不再缓存，
-  /// 转发继续走 —— 不能因为写盘失败把正在看的片掐掉。
-  Future<void> write(List<int> chunk) async {
-    if (_done) return;
-    _pending.add(chunk);
-    if (_pending.length < _flushAt) return;
-    await _flush();
+  /// 刻意做成同步方法：调用方在转发循环里直接调，绝不让播放器等磁盘。
+  void enqueue(List<int> chunk) {
+    if (_done || _dropped) return;
+    if (_queued + chunk.length > maxQueuedBytes) {
+      // 队列满：这个分片不缓存了。已排队的数据一并丢掉，
+      // 免得留下一个不完整的文件被当成完整缓存命中。
+      _dropped = true;
+      _queue.clear();
+      _queued = 0;
+      return;
+    }
+    _queue.add(chunk);
+    _queued += chunk.length;
+    unawaited(_pump());
   }
 
-  Future<void> _flush() async {
-    if (_pending.isEmpty || _done) return;
-    final bytes = _pending.takeBytes();
+  Future<void> _pump() async {
+    if (_pumping) return;
+    _pumping = true;
     try {
-      await file.writeFrom(bytes);
-      _written += bytes.length;
+      while (_queue.isNotEmpty && !_dropped) {
+        final chunk = _queue.removeFirst();
+        _queued -= chunk.length;
+        await file.writeFrom(chunk);
+        _written += chunk.length;
+      }
     } catch (_) {
-      await abort();
+      // 磁盘满 / 文件被占用：放弃缓存，不影响已经在播的流。
+      _dropped = true;
+      _queue.clear();
+      _queued = 0;
+    } finally {
+      _pumping = false;
+      final idle = _idle;
+      _idle = null;
+      idle?.complete();
+      // 退出循环的瞬间可能刚好有新块入队，这里补一次。
+      if (_queue.isNotEmpty && !_dropped) unawaited(_pump());
     }
+  }
+
+  /// 等队列写空。只有收尾（commit）需要，转发路径从不调用。
+  Future<void> _drain() async {
+    while (_pumping) {
+      final idle = _idle ??= Completer<void>();
+      await idle.future;
+    }
+    if (_queue.isNotEmpty && !_dropped) await _pump();
   }
 
   Future<void> commit() async {
     if (_done) return;
-    await _flush();
-    if (_done) return;
+    await _drain();
     _done = true;
+    if (_dropped) {
+      // 已经放弃这个分片：先关句柄再删，Windows 上删一个还开着的文件会失败，
+      // 留下删不掉的 .tmp（还会连带泄漏一个句柄）。
+      try {
+        await file.close();
+      } catch (_) {}
+      await _dropTmp();
+      _release();
+      return;
+    }
     try {
       await file.close();
       // 声明了长度却少写：上游中途断了。半截分片当完整缓存用，
@@ -385,16 +433,25 @@ class StreamCacheWriter {
 
   Future<void> abort() async {
     _done = true;
+    _dropped = true;
+    _queue.clear();
+    _queued = 0;
+    // 等在途那次 writeFrom 落完再关句柄：Windows 上删一个正被写入的
+    // 文件会失败，留一堆删不掉的 .tmp 比不缓存更糟。
+    while (_pumping) {
+      final idle = _idle ??= Completer<void>();
+      await idle.future;
+    }
     try {
       await file.close();
     } catch (_) {}
-    _pending.clear();
     await _dropTmp();
     _release();
   }
 
   Future<void> _dropTmp() async {
-    _pending.clear();
+    _queue.clear();
+    _queued = 0;
     try {
       if (await tmp.exists()) await tmp.delete();
     } catch (_) {}

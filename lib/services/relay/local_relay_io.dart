@@ -417,7 +417,7 @@ class LocalRelay {
     }
     // 视频流不攒包：关掉输出缓冲，一块写完就直接交给 socket。
     // 默认的 bufferOutput 会先攒满 8KB 再下发，等于在 socket 之外又压一层
-    // 队列和一次多余拷贝；边播边缓时它和磁盘缓冲叠在一起，内存曲线更容易陡。
+    // 队列和一次多余拷贝，播放器和上游之间多了一份无谓的驻留。
     res.bufferOutput = false;
     // 未命中缓存：一边转发给播放器，一边把分片写进本地。
     // 只缓存「整段 GET 的媒体响应」；Range、gzip、错误页一律透传。
@@ -440,13 +440,12 @@ class LocalRelay {
       return;
     }
     try {
-      // 边转发边落盘：先落盘、再放行这一块，磁盘慢时背压会一路传回上游的
-      // TCP 窗口，内存里恒定只压着一块 chunk。
-      // 之前是 res.add + writer.add 两次「只入队不等待」：上游给多快就吞多快，
-      // 两块缓冲各存一份整段分片（单条最多 64MB），四五个分片并发直接吃掉几百 MB。
+      // 仿夸克：转发和落盘彻底解耦。enqueue 只入队、立即返回，播放器完全
+      // 按网络速度走；写盘在自己的异步循环里跑，队列超过 512KB 就放弃这个
+      // 分片的缓存。内存上界 = 512KB × 并发写入器，与分片大小、磁盘快慢无关。
       await res.addStream(
-        upstream.asyncMap((chunk) async {
-          await writer.write(chunk);
+        upstream.map((chunk) {
+          writer.enqueue(chunk);
           return chunk;
         }),
       );
