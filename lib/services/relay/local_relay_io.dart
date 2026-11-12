@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
 
@@ -414,6 +415,10 @@ class LocalRelay {
       await res.close();
       return;
     }
+    // 视频流不攒包：关掉输出缓冲，一块写完就直接交给 socket。
+    // 默认的 bufferOutput 会先攒满 8KB 再下发，等于在 socket 之外又压一层
+    // 队列和一次多余拷贝；边播边缓时它和磁盘缓冲叠在一起，内存曲线更容易陡。
+    res.bufferOutput = false;
     // 未命中缓存：一边转发给播放器，一边把分片写进本地。
     // 只缓存「整段 GET 的媒体响应」；Range、gzip、错误页一律透传。
     final cacheable =
@@ -435,19 +440,30 @@ class LocalRelay {
       return;
     }
     try {
-      await for (final chunk in upstream) {
-        res.add(chunk);
-        writer.add(chunk);
-      }
-      await res.close();
-      await writer.commit();
+      // 边转发边落盘：先落盘、再放行这一块，磁盘慢时背压会一路传回上游的
+      // TCP 窗口，内存里恒定只压着一块 chunk。
+      // 之前是 res.add + writer.add 两次「只入队不等待」：上游给多快就吞多快，
+      // 两块缓冲各存一份整段分片（单条最多 64MB），四五个分片并发直接吃掉几百 MB。
+      await res.addStream(
+        upstream.asyncMap((chunk) async {
+          await writer.write(chunk);
+          return chunk;
+        }),
+      );
     } catch (_) {
-      // 播放器提前断开（拖动 / 切集）：半截文件不留在缓存里。
+      // 播放器提前断开（拖动 / 切集）或上游中断：半截文件不留在缓存里。
       await writer.abort();
       try {
         await res.close();
       } catch (_) {}
+      return;
     }
+    try {
+      await res.close();
+    } catch (_) {
+      // 播放器读够就断开是常态；此时上游已整段读完，缓存仍然有效。
+    }
+    await writer.commit();
   }
 
   /// 只把音视频 / 图片 / 二进制当作可缓存内容，避免把 HTML 错误页写进缓存。
@@ -1161,12 +1177,21 @@ class LocalRelay {
     HttpClientResponse response, {
     int maxBytes = 8 << 20,
   }) async {
-    final out = <int>[];
+    // BytesBuilder 追加是摊还 O(1)；用 <int>[] 一路 addAll 是 O(n²) 拷贝，
+    // 几 MB 的清单会把 CPU 和峰值内存一起放大。超限时按剩余额度截断。
+    final out = BytesBuilder(copy: false);
+    var total = 0;
     await for (final chunk in response) {
-      out.addAll(chunk);
-      if (out.length >= maxBytes) break;
+      final room = maxBytes - total;
+      if (room <= 0) break;
+      if (chunk.length > room) {
+        out.add(chunk.sublist(0, room));
+        break;
+      }
+      out.add(chunk);
+      total += chunk.length;
     }
-    return out;
+    return out.takeBytes();
   }
 
   void _copyHeader(HttpClientResponse from, HttpResponse to, String name) {
