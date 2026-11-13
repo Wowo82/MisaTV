@@ -143,9 +143,6 @@ class _PlayerPageState extends State<PlayerPage>
   String _skipInheritedFrom = '';
   bool _outroFired = false;
 
-  /// 已经写进当前内核的缓冲参数：设置页改动后据此判断要不要重新下发。
-  double? _lastAppliedBufferMin;
-  double? _lastAppliedBufferMax;
   bool _holdingRate = false;
   double? _rateBeforeHold;
   bool _mini = false;
@@ -334,22 +331,9 @@ class _PlayerPageState extends State<PlayerPage>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (_opened) {
-      // 设置页改了缓冲参数：当前播放器立刻跟随，不必等下一集起播。
-      final settings = _app.playerSettings;
-      if (settings.bufferMinSec != _lastAppliedBufferMin ||
-          settings.bufferMaxSec != _lastAppliedBufferMax) {
-        _lastAppliedBufferMin = settings.bufferMinSec;
-        _lastAppliedBufferMax = settings.bufferMaxSec;
-        final controller = _controller;
-        if (controller != null) _applyBufferRange(controller);
-      }
-      return;
-    }
+    if (_opened) return;
     _opened = true;
     _app = AppScope.of(context);
-    _lastAppliedBufferMin = _app.playerSettings.bufferMinSec;
-    _lastAppliedBufferMax = _app.playerSettings.bufferMaxSec;
     _immersiveMode = _app.playerSettings.immersiveMode;
     BossKeyService.instance.bindPlayer(
       this,
@@ -1811,23 +1795,20 @@ class _PlayerPageState extends State<PlayerPage>
     return end.inMilliseconds.toDouble();
   }
 
-  /// 把设置里的「起播预缓冲 / 最大缓冲」写进 fvp（libmdk）内核。
+  /// fvp（libmdk）的缓冲区间：攒够 1s 开播，最多 4s 就停止继续拉流。
   ///
-  /// video_player 没有等价参数，非 fvp 内核时直接跳过。换集时调用一次；
-  /// 设置变更由 didChangeDependencies 触发重新下发，当前集立即生效。
+  /// 这两个值原本是设置项，现已固定 —— 缓冲属于播放内核的实现细节，
+  /// 暴露给用户只会多一个调坏的入口。
+  static const int _bufferMinMs = 1000;
+  static const int _bufferMaxMs = 4000;
+
+  /// 把固定的缓冲区间写进 fvp（libmdk）内核。
+  ///
+  /// video_player 没有等价参数，非 fvp 内核时直接跳过。换集时调用一次。
   void _applyBufferRange(VideoPlayerController controller) {
     if (!_mdkEnabled) return;
-    final settings = _app.playerSettings;
-    final minMs = (settings.bufferMinSec * 1000)
-        .round()
-        .clamp(200, 30000)
-        .toInt();
-    final maxMs = (settings.bufferMaxSec * 1000)
-        .round()
-        .clamp(minMs + 500, 120000)
-        .toInt();
     try {
-      controller.setBufferRange(min: minMs, max: maxMs);
+      controller.setBufferRange(min: _bufferMinMs, max: _bufferMaxMs);
     } catch (_) {
       // 内核未接管时扩展会抛 StateError，退化为内核默认缓冲
     }

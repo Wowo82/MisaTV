@@ -934,41 +934,6 @@ class SettingsPageState extends State<SettingsPage> {
                   ),
                   const SizedBox(height: 16),
                   _Section(
-                    title: '播放缓冲',
-                    icon: Icons.speed_rounded,
-                    collapsible: true,
-                    initiallyExpanded: false,
-                    trailing: Text(
-                      '最大 ${app.playerSettings.bufferMaxSec.toStringAsFixed(0)}s',
-                      style: theme.textTheme.labelSmall,
-                    ),
-                    summary: Text(
-                      '预缓冲 ${app.playerSettings.bufferMinSec.toStringAsFixed(1)}s'
-                      ' · 最大 ${app.playerSettings.bufferMaxSec.toStringAsFixed(0)}s',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: theme.colorScheme.onSurface.withValues(
-                          alpha: 0.45,
-                        ),
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _ActionRow(
-                          icon: Icons.memory_rounded,
-                          title: '播放缓冲',
-                          subtitle:
-                              '起播预缓冲 '
-                              '${app.playerSettings.bufferMinSec.toStringAsFixed(1)}s · '
-                              '最大缓冲 '
-                              '${app.playerSettings.bufferMaxSec.toStringAsFixed(0)}s',
-                          onTap: () => _editBufferSettings(context, app),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  _Section(
                     title: '画面与播放器',
                     icon: Icons.aspect_ratio_rounded,
                     collapsible: true,
@@ -6848,80 +6813,6 @@ class _SubtitleApiDialogState extends State<_SubtitleApiDialog> {
       ],
     );
   }
-}
-
-/// 播放缓冲：起播预缓冲 + 最大缓冲（fvp 的 `bufferRange`）。
-Future<void> _editBufferSettings(BuildContext context, AppState app) async {
-  var minSec = app.playerSettings.bufferMinSec;
-  var maxSec = app.playerSettings.bufferMaxSec;
-  final saved = await showDialog<bool>(
-    context: context,
-    builder: (ctx) => StatefulBuilder(
-      builder: (ctx, setDialog) {
-        final theme = Theme.of(ctx);
-        return AlertDialog(
-          title: const Text('播放缓冲'),
-          content: SizedBox(
-            width: 420,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '起播预缓冲 ${minSec.toStringAsFixed(1)} 秒',
-                  style: theme.textTheme.bodyMedium,
-                ),
-                Slider(
-                  value: minSec,
-                  min: 0.2,
-                  max: 10,
-                  divisions: 49,
-                  label: '${minSec.toStringAsFixed(1)}s',
-                  onChanged: (v) => setDialog(() => minSec = v),
-                ),
-                Text(
-                  '最大缓冲 ${maxSec.toStringAsFixed(0)} 秒',
-                  style: theme.textTheme.bodyMedium,
-                ),
-                Slider(
-                  value: maxSec,
-                  min: 2,
-                  max: 60,
-                  divisions: 58,
-                  label: '${maxSec.toStringAsFixed(0)}s',
-                  onChanged: (v) => setDialog(() => maxSec = v),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  '只对内置 fvp 内核生效：预缓冲越大起播越稳，最大缓冲越大越抗卡顿，'
-                  '代价是更多内存与流量；保存后立即应用到当前播放。',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(ctx).pop(true),
-              child: const Text('保存'),
-            ),
-          ],
-        );
-      },
-    ),
-  );
-  if (saved != true) return;
-  final fixedMax = maxSec < minSec + 0.5 ? minSec + 0.5 : maxSec;
-  await app.setPlayerSettings(
-    app.playerSettings.copyWith(bufferMinSec: minSec, bufferMaxSec: fixedMax),
-  );
-  if (context.mounted) _settingsSnack(context, '播放缓冲已更新，当前播放已应用');
 }
 
 Future<void> _pickMagnetDownloadDir(BuildContext context, AppState app) async {
