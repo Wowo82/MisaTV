@@ -35,7 +35,6 @@ import '../../services/jvm/jvm_runtime.dart';
 import '../../services/mpv_extension.dart';
 import '../../services/player/external_players.dart';
 import '../../services/py_runtime_service.dart';
-import '../../services/relay/local_relay.dart';
 import '../../services/runtime_extension.dart';
 import '../../state/app_state.dart';
 import '../widgets/drive_cookie_dialog.dart';
@@ -935,18 +934,17 @@ class SettingsPageState extends State<SettingsPage> {
                   ),
                   const SizedBox(height: 16),
                   _Section(
-                    title: '缓冲与缓存',
+                    title: '播放缓冲',
                     icon: Icons.speed_rounded,
                     collapsible: true,
                     initiallyExpanded: false,
                     trailing: Text(
-                      app.playerSettings.streamCache ? '边播边缓存' : '不缓存',
+                      '最大 ${app.playerSettings.bufferMaxSec.toStringAsFixed(0)}s',
                       style: theme.textTheme.labelSmall,
                     ),
                     summary: Text(
                       '预缓冲 ${app.playerSettings.bufferMinSec.toStringAsFixed(1)}s'
-                      ' · 最大 ${app.playerSettings.bufferMaxSec.toStringAsFixed(0)}s'
-                      ' · 缓存 ${app.playerSettings.streamCache ? '${app.playerSettings.streamCacheMb}MB' : '关'}',
+                      ' · 最大 ${app.playerSettings.bufferMaxSec.toStringAsFixed(0)}s',
                       style: theme.textTheme.labelSmall?.copyWith(
                         color: theme.colorScheme.onSurface.withValues(
                           alpha: 0.45,
@@ -965,31 +963,6 @@ class SettingsPageState extends State<SettingsPage> {
                               '最大缓冲 '
                               '${app.playerSettings.bufferMaxSec.toStringAsFixed(0)}s',
                           onTap: () => _editBufferSettings(context, app),
-                        ),
-                        SwitchListTile.adaptive(
-                          value: app.playerSettings.streamCache,
-                          onChanged: (v) => app.setPlayerSettings(
-                            app.playerSettings.copyWith(streamCache: v),
-                          ),
-                          title: const Text('边播边缓存'),
-                          subtitle: const Text(
-                            '把已下行的分片存到本地：重看、拖回看过的位置直接读盘，不再回源',
-                          ),
-                          contentPadding: EdgeInsets.zero,
-                        ),
-                        _ActionRow(
-                          icon: Icons.sd_storage_outlined,
-                          title: '缓存容量上限',
-                          subtitle:
-                              '${app.playerSettings.streamCacheMb} MB'
-                              '（超出后按最久未使用淘汰）',
-                          onTap: () => _pickStreamCacheSize(context, app),
-                        ),
-                        _ActionRow(
-                          icon: Icons.cleaning_services_outlined,
-                          title: '清空播放缓存',
-                          subtitle: '只清理边播缓存目录，不影响收藏 / 历史 / 订阅',
-                          onTap: () => _clearStreamCache(context),
                         ),
                       ],
                     ),
@@ -6949,78 +6922,6 @@ Future<void> _editBufferSettings(BuildContext context, AppState app) async {
     app.playerSettings.copyWith(bufferMinSec: minSec, bufferMaxSec: fixedMax),
   );
   if (context.mounted) _settingsSnack(context, '播放缓冲已更新，当前播放已应用');
-}
-
-/// 缓存容量上限：给固定档位，避免手填出离谱的值。
-Future<void> _pickStreamCacheSize(BuildContext context, AppState app) async {
-  const options = [256, 512, 1024, 2048, 4096, 8192];
-  final current = app.playerSettings.streamCacheMb;
-  final picked = await showDialog<int>(
-    context: context,
-    builder: (ctx) => SimpleDialog(
-      title: const Text('缓存容量上限'),
-      children: [
-        for (final mb in options)
-          SimpleDialogOption(
-            onPressed: () => Navigator.of(ctx).pop(mb),
-            child: Row(
-              children: [
-                Icon(
-                  mb == current
-                      ? Icons.check_circle_rounded
-                      : Icons.circle_outlined,
-                  size: 18,
-                  color: mb == current
-                      ? Theme.of(ctx).colorScheme.primary
-                      : Theme.of(ctx).disabledColor,
-                ),
-                const SizedBox(width: 10),
-                Text(mb >= 1024 ? '${mb ~/ 1024} GB' : '$mb MB'),
-              ],
-            ),
-          ),
-      ],
-    ),
-  );
-  if (picked == null) return;
-  await app.setPlayerSettings(
-    app.playerSettings.copyWith(streamCacheMb: picked),
-  );
-  if (context.mounted) {
-    _settingsSnack(
-      context,
-      '缓存上限已设为 ${picked >= 1024 ? '${picked ~/ 1024} GB' : '$picked MB'}',
-    );
-  }
-}
-
-/// 清空边播缓存目录。
-Future<void> _clearStreamCache(BuildContext context) async {
-  final bytes = await LocalRelay.instance.streamCacheBytes();
-  if (!context.mounted) return;
-  final size = bytes >= 1024 * 1024 * 1024
-      ? '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB'
-      : '${(bytes / (1024 * 1024)).toStringAsFixed(0)} MB';
-  final ok = await showDialog<bool>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      title: const Text('清空播放缓存'),
-      content: Text('当前占用约 $size。清空后已缓存的分片会重新从网络拉取。'),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(ctx).pop(false),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.of(ctx).pop(true),
-          child: const Text('清空'),
-        ),
-      ],
-    ),
-  );
-  if (ok != true) return;
-  await LocalRelay.instance.clearStreamCache();
-  if (context.mounted) _settingsSnack(context, '播放缓存已清空');
 }
 
 Future<void> _pickMagnetDownloadDir(BuildContext context, AppState app) async {

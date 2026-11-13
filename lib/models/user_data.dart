@@ -366,8 +366,6 @@ class PlayerSettings {
     this.m3u8Purify = false,
     this.bufferMinSec = 1.0,
     this.bufferMaxSec = 4.0,
-    this.streamCache = false,
-    this.streamCacheMb = 1024,
     this.fit = 'contain',
     this.jsWorkerPool = false,
     this.keepSpiderHosts = false,
@@ -442,8 +440,6 @@ class PlayerSettings {
     bool? m3u8Purify,
     double? bufferMinSec,
     double? bufferMaxSec,
-    bool? streamCache,
-    int? streamCacheMb,
     String? fit,
     bool? jsWorkerPool,
     bool? keepSpiderHosts,
@@ -469,8 +465,6 @@ class PlayerSettings {
     m3u8Purify: m3u8Purify ?? this.m3u8Purify,
     bufferMinSec: bufferMinSec ?? this.bufferMinSec,
     bufferMaxSec: bufferMaxSec ?? this.bufferMaxSec,
-    streamCache: streamCache ?? this.streamCache,
-    streamCacheMb: streamCacheMb ?? this.streamCacheMb,
     fit: fit ?? this.fit,
     jsWorkerPool: jsWorkerPool ?? this.jsWorkerPool,
     keepSpiderHosts: keepSpiderHosts ?? this.keepSpiderHosts,
@@ -494,12 +488,6 @@ class PlayerSettings {
 
   /// 最大缓冲秒数（fvp/libmdk `bufferRange.max`）：超过就停止继续拉流。
   final double bufferMaxSec;
-
-  /// 边播边缓存：把已下行的分片写进本地磁盘，重看 / 拖动直接读盘。
-  final bool streamCache;
-
-  /// 边播边缓存容量上限（MB），超出按最久未用淘汰。
-  final int streamCacheMb;
 
   /// JS 蜘蛛并行（实验，默认关）：开启后最多 3 只 QuickJS 执行器，
   /// 多 JS 源搜索/浏览不用再排同一个 isolate 的队。
@@ -536,8 +524,6 @@ class PlayerSettings {
     'm3u8Purify': m3u8Purify,
     'bufferMinSec': bufferMinSec,
     'bufferMaxSec': bufferMaxSec,
-    'streamCache': streamCache,
-    'streamCacheMb': streamCacheMb,
     'fit': fit,
     'jsWorkerPool': jsWorkerPool,
     'keepSpiderHosts': keepSpiderHosts,
@@ -581,10 +567,6 @@ class PlayerSettings {
     bufferMaxSec: ((j['bufferMaxSec'] as num?)?.toDouble() ?? 4.0)
         .clamp(1.0, 120.0)
         .toDouble(),
-    streamCache: (j['streamCache'] as bool?) ?? false,
-    streamCacheMb: ((j['streamCacheMb'] as num?)?.toInt() ?? 1024)
-        .clamp(128, 16384)
-        .toInt(),
     fit: normalizePlayerFit((j['fit'] ?? '').toString()).name,
     jsWorkerPool: (j['jsWorkerPool'] as bool?) ?? false,
     keepSpiderHosts: (j['keepSpiderHosts'] as bool?) ?? false,

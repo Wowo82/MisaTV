@@ -12,7 +12,6 @@ import '../drive/drive_descriptor.dart';
 import '../drive/uc_native.dart';
 import '../torrent/bt_stream.dart';
 import 'm3u8_purify.dart';
-import 'stream_cache_io.dart';
 
 /// 本地 9978 中继：`/play` / `/file` / `/pkg` / `/img` / `/bt` / `/proxy?do=live`。
 ///
@@ -46,9 +45,6 @@ class LocalRelay {
 
   /// 当前常驻取流 JVM 的宿主代理端口（`/proxy?do=hmys` 等壳路由要转发给它）。
   int Function() _jvmProxyPort = () => 0;
-
-  /// 边播边缓存的磁盘实现；未启用 / 未配置目录时为 null。
-  StreamDiskCache? _streamCache;
 
   /// 外部播放器选集列表的按需解析：`/ext/<token>/<index>` 调到这里，
   /// 返回可直接播放的地址（通常是本机 `/play` 中继地址）。
@@ -87,9 +83,6 @@ class LocalRelay {
     String Function(String id)? davAuth,
     BtStreamSource? Function()? btSource,
     int Function()? jvmProxyPort,
-    String Function()? cacheDir,
-    bool Function()? cacheEnabled,
-    int Function()? cacheLimitMb,
     Future<String?> Function(String token, int index)? externalEpisodeResolver,
   }) async {
     if (_server != null) return;
@@ -100,14 +93,6 @@ class LocalRelay {
     _davAuth = davAuth ?? (_) => '';
     _btSource = btSource ?? () => null;
     _jvmProxyPort = jvmProxyPort ?? () => 0;
-    final cacheRoot = cacheDir?.call().trim() ?? '';
-    _streamCache = cacheRoot.isEmpty
-        ? null
-        : StreamDiskCache(
-            dir: cacheRoot,
-            enabled: cacheEnabled ?? () => false,
-            limitMb: cacheLimitMb ?? () => 1024,
-          );
     _externalEpisodeResolver = externalEpisodeResolver;
     _client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 15)
@@ -129,14 +114,6 @@ class LocalRelay {
     server.listen(_handle, onError: (Object _) {});
   }
 
-  /// 边播边缓存当前占用字节数（设置页展示 / 清空前确认用）。
-  Future<int> streamCacheBytes() async => await _streamCache?.totalBytes() ?? 0;
-
-  /// 清空边播缓存目录。
-  Future<void> clearStreamCache() async {
-    await _streamCache?.clear();
-  }
-
   Future<void> stop() async {
     final server = _server;
     _server = null;
@@ -145,7 +122,6 @@ class LocalRelay {
     _playHeaderTokens.clear();
     _playTargets.clear();
     _playTargetTokens.clear();
-    _streamCache = null;
     try {
       await server?.close(force: true);
     } catch (_) {
@@ -335,21 +311,6 @@ class LocalRelay {
       if (auth.isNotEmpty) headers['Authorization'] = auth;
     }
     final range = request.headers.value(HttpHeaders.rangeHeader);
-    // 边播边缓存：命中直接读盘，连上游都不碰 —— 拖回看过的位置不再回源。
-    final cacheKey = StreamDiskCache.keyOf(target);
-    if (range == null &&
-        request.method == 'GET' &&
-        !target.toLowerCase().contains('.m3u8')) {
-      final cached = await _streamCache?.lookup(cacheKey);
-      if (cached != null) {
-        res.statusCode = 200;
-        res.headers.set(HttpHeaders.contentTypeHeader, cached.contentType);
-        res.headers.contentLength = cached.length;
-        await res.addStream(cached.file.openRead());
-        await res.close();
-        return;
-      }
-    }
 
     final upstream = await _open(
       target,
@@ -419,62 +380,9 @@ class LocalRelay {
     // 默认的 bufferOutput 会先攒满 8KB 再下发，等于在 socket 之外又压一层
     // 队列和一次多余拷贝，播放器和上游之间多了一份无谓的驻留。
     res.bufferOutput = false;
-    // 未命中缓存：一边转发给播放器，一边把分片写进本地。
-    // 只缓存「整段 GET 的媒体响应」；Range、gzip、错误页一律透传。
-    final cacheable =
-        _streamCache != null &&
-        range == null &&
-        request.method == 'GET' &&
-        upstream.statusCode == 200 &&
-        _responseHeader(upstream, HttpHeaders.contentEncodingHeader).isEmpty &&
-        _cacheableContentType(contentType);
-    final writer = cacheable
-        ? await _streamCache!.open(
-            cacheKey,
-            contentType: contentType,
-            length: upstream.contentLength,
-          )
-        : null;
-    if (writer == null) {
-      await upstream.pipe(res);
-      return;
-    }
-    try {
-      // 仿夸克：转发和落盘彻底解耦。enqueue 只入队、立即返回，播放器完全
-      // 按网络速度走；写盘在自己的异步循环里跑，队列超过 512KB 就放弃这个
-      // 分片的缓存。内存上界 = 512KB × 并发写入器，与分片大小、磁盘快慢无关。
-      await res.addStream(
-        upstream.map((chunk) {
-          writer.enqueue(chunk);
-          return chunk;
-        }),
-      );
-    } catch (_) {
-      // 播放器提前断开（拖动 / 切集）或上游中断：半截文件不留在缓存里。
-      await writer.abort();
-      try {
-        await res.close();
-      } catch (_) {}
-      return;
-    }
-    try {
-      await res.close();
-    } catch (_) {
-      // 播放器读够就断开是常态；此时上游已整段读完，缓存仍然有效。
-    }
-    await writer.commit();
-  }
-
-  /// 只把音视频 / 图片 / 二进制当作可缓存内容，避免把 HTML 错误页写进缓存。
-  static bool _cacheableContentType(String type) {
-    final value = type.toLowerCase();
-    if (value.isEmpty) return true;
-    return value.startsWith('video/') ||
-        value.startsWith('audio/') ||
-        value.startsWith('image/') ||
-        value.contains('octet-stream') ||
-        value.contains('mp2t') ||
-        value.contains('mp4');
+    // 直接流式转发。pipe 内部走 addStream：socket 写不动时会暂停上游订阅，
+    // 数据不会在进程里堆积 —— 别改回逐块 add，那是无界缓冲。
+    await upstream.pipe(res);
   }
 
   Future<void> _handleFile(HttpRequest request) async {

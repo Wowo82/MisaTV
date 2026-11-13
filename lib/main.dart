@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import 'app.dart';
@@ -165,10 +164,6 @@ Future<void> _bootstrap(List<String> args) async {
       davAuth: (id) => state.davService.authHeader(id),
       btSource: () => state.torrentPlay,
       jvmProxyPort: () => sourceService.jar.activeHostProxyPort,
-      // 边播边缓存：目录固定放在应用数据下，开关与容量上限跟着设置实时走。
-      cacheDir: () => p.join(support, 'cache', 'stream'),
-      cacheEnabled: () => state.playerSettings.streamCache,
-      cacheLimitMb: () => state.playerSettings.streamCacheMb,
       externalEpisodeResolver: externalPlaylist.resolveEpisode,
     );
     // 订阅里的代理规则（`rules[].hosts`）命中的请求走中继的通用代理口。
